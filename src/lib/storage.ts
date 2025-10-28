@@ -1,5 +1,5 @@
 export type SavedTab = {
-  id: string; // our own id
+  id: string;
   title: string;
   url: string;
   favIconUrl?: string;

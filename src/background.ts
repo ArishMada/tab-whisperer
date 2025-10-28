@@ -64,6 +64,7 @@ chrome.action.onClicked.addListener(async (tab) => {
 });
 
 // ===== Message router (one listener handling all message types)
+
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (msg?.type === "CLOSE_SIDEBAR") {
     (async () => {
