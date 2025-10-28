@@ -1,98 +1,100 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from "react";
 
-type TabInfo = { id: number; title: string; url?: string }
+type TabInfo = { id: number; title: string; url: string; favIconUrl?: string };
 
-// Detect if we’re running inside the injected iframe (sidebar) vs popup window
-const inIframe = (() => {
-  try {
-    return window.self !== window.top
-  } catch {
-    return true
+export default function Sidebar() {
+  const [tabs, setTabs] = useState<TabInfo[]>([]);
+  const [loading, setLoading] = useState(false);
+
+  const inExtension = useMemo(
+    () => typeof chrome !== "undefined" && !!chrome.runtime?.id,
+    []
+  );
+
+  async function loadTabs() {
+    if (!inExtension) return;
+    setLoading(true);
+    const res = await chrome.runtime.sendMessage({ type: "GET_TABS_SNAPSHOT" });
+    setTabs(res?.tabs ?? []);
+    setLoading(false);
   }
-})()
-
-function closeSidebar() {
-  if (!inIframe) return // Only closable from the iframe version
-  chrome.runtime.sendMessage({ type: 'CLOSE_SIDEBAR' })
-}
-
-function CloseButton() {
-  return (
-    <button
-      onClick={closeSidebar}
-      title="Close sidebar"
-      aria-label="Close sidebar"
-      style={{
-        marginLeft: 'auto',
-        border: 'none',
-        background: 'transparent',
-        cursor: 'pointer',
-        width: 28,
-        height: 28,
-        display: 'grid',
-        placeItems: 'center',
-        borderRadius: 8,
-        transition: 'background 120ms ease',
-      }}
-      onMouseEnter={(e) => (e.currentTarget.style.background = 'rgba(0,0,0,0.06)')}
-      onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
-    >
-      {/* nicer SVG “X” icon */}
-      <svg width="16" height="16" viewBox="0 0 24 24" stroke="currentColor" fill="none" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-        <line x1="18" y1="6" x2="6" y2="18" />
-        <line x1="6" y1="6" x2="18" y2="18" />
-      </svg>
-    </button>
-  )
-}
-
-export function Sidebar() {
-  const [tabs, setTabs] = useState<TabInfo[]>([])
-  const [loading, setLoading] = useState(true)
 
   useEffect(() => {
-    // Esc closes only when in iframe sidebar
-    if (!inIframe) return
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') closeSidebar()
-    }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [])
-
-  useEffect(() => {
-    chrome.tabs.query({}, (all) => {
-      const data = all.map(t => ({ id: t.id!, title: t.title || t.url || 'Untitled', url: t.url }))
-      setTabs(data)
-      setLoading(false)
-    })
-  }, [])
+    loadTabs();
+  }, [inExtension]);
 
   return (
-    <div style={{ height:'100%', display:'flex', flexDirection:'column', padding:12, background:'#f6f7fb' }}>
-      <header style={{ display:'flex', alignItems:'center', gap:8, marginBottom:10 }}>
-        <span style={{ fontSize:18, fontWeight:700 }}>Tab Whisperer 🫧</span>
-
-        {inIframe ? <CloseButton /> : (
-          <span style={{ marginLeft:'auto', fontSize:12, opacity:0.6 }}>
-            Popup window
-          </span>
-        )}
+    <div className="min-h-full bg-background text-foreground">
+      <header className="sticky top-0 z-10 bg-background/80 backdrop-blur border-b">
+        <div className="px-4 py-3 flex items-center gap-2">
+          <span className="text-xl font-semibold">Tab Whisperer</span>
+          <button
+            className="ml-auto px-3 py-1 rounded-md border text-sm"
+            onClick={loadTabs}
+          >
+            Refresh
+          </button>
+          <button
+            className="ml-auto h-8 w-8 flex items-center justify-center rounded-md border"
+            title="Close"
+            onClick={() =>
+              chrome.runtime.sendMessage({ type: "CLOSE_SIDEBAR" })
+            }
+          >
+            ✕
+          </button>
+        </div>
       </header>
 
-      <div style={{ overflow:'auto', borderRadius:8, background:'#fff', padding:8, boxShadow:'0 1px 4px rgba(0,0,0,0.08)' }}>
-        {tabs.map(t => (
-          <div key={t.id} style={{ padding:'8px 6px', borderBottom:'1px solid #eee' }}>
-            <div style={{ fontSize:14, fontWeight:600, marginBottom:2 }}>{t.title}</div>
-            <div style={{ fontSize:12, opacity:0.7, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
-              {t.url}
-            </div>
+      <main className="p-4 space-y-4">
+        {!inExtension && (
+          <div className="text-sm opacity-70">
+            This is a preview without Chrome APIs. Load as an extension to see
+            your tabs.
           </div>
-        ))}
-        {tabs.length === 0 && !loading && (
-          <div style={{ padding:12, fontSize:13, opacity:0.7 }}>No tabs found.</div>
         )}
-      </div>
+
+        {inExtension && (
+          <>
+            {loading && <div className="text-sm opacity-70">Loading…</div>}
+            {!loading && tabs.length === 0 && (
+              <div className="text-sm opacity-70">No tabs detected.</div>
+            )}
+
+            <ul className="space-y-2">
+              {tabs.map((t) => (
+                <li
+                  key={t.id}
+                  className="p-3 rounded-lg border flex items-center gap-3"
+                >
+                  <img
+                    src={
+                      t.favIconUrl || chrome.runtime.getURL("icons/Logo.png")
+                    }
+                    className="w-5 h-5 rounded-sm"
+                    onError={(e) =>
+                      ((e.currentTarget as HTMLImageElement).style.display =
+                        "none")
+                    }
+                  />
+                  <div className="min-w-0">
+                    <div className="text-sm font-medium truncate">
+                      {t.title || "(No title)"}
+                    </div>
+                    <div className="text-xs opacity-60 truncate">{t.url}</div>
+                  </div>
+                  <button
+                    className="ml-auto text-xs px-2 py-1 rounded border"
+                    onClick={() => chrome.tabs.update(t.id, { active: true })}
+                  >
+                    Open
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </>
+        )}
+      </main>
     </div>
-  )
+  );
 }
