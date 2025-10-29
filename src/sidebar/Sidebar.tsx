@@ -263,6 +263,31 @@ export default function Sidebar() {
               </>
             )}
 
+            {/* Recap all tabs (AI summary) */}
+            <button
+              className="h-8 px-3 rounded-md border text-xs"
+              onClick={async () => {
+                const allTabs = [...tabs, ...saved].map(({ title, url }) => ({
+                  title,
+                  url,
+                }));
+                const res = await chrome.runtime.sendMessage({
+                  type: "SUMMARIZE_TABS",
+                  tabs: allTabs,
+                  prompt:
+                    "Give a short recap of all browsing topics without detailed summaries.",
+                });
+
+                if (res?.ok) {
+                  alert(`🧠 Recap:\n\n${res.summary}`);
+                } else {
+                  alert(`Error: ${res?.error ?? "Unknown error"}`);
+                }
+              }}
+            >
+              Recap
+            </button>
+
             {view === "all" && selecting && (
               <>
                 <span className="text-xs opacity-70">
@@ -429,6 +454,35 @@ export default function Sidebar() {
                         <span>{groupName}</span>
                       </button>
                     )}
+
+                    {/* AI summarize this group */}
+                    <button
+                      className="text-xs px-2 py-1 rounded border ml-2"
+                      onClick={async () => {
+                        // `items` is the group's array you already map below
+                        const groupTabs = items.map(({ title, url }) => ({
+                          title,
+                          url,
+                        }));
+                        const userPrompt =
+                          prompt("Optional: Add extra instruction for AI") ||
+                          "";
+
+                        const res = await chrome.runtime.sendMessage({
+                          type: "SUMMARIZE_TABS",
+                          tabs: groupTabs,
+                          prompt: userPrompt,
+                        });
+
+                        if (res?.ok) {
+                          alert(`Summary:\n\n${res.summary}`);
+                        } else {
+                          alert(`Error: ${res?.error ?? "Unknown error"}`);
+                        }
+                      }}
+                    >
+                      Summarize
+                    </button>
 
                     {/* kebab menu */}
                     <div className="ml-auto relative">

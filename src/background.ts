@@ -1,5 +1,6 @@
 import type { SavedTab } from "./lib/storage";
 import { renameGroup } from "./lib/storage";
+import { summarizeTabs } from "./lib/gemini";
 
 const OPEN_KEY_PREFIX = "tw_open_"; // session-scoped
 const openKey = (winId: number) => `${OPEN_KEY_PREFIX}${winId}`;
@@ -21,6 +22,9 @@ function isRestricted(url?: string) {
     url.startsWith("about://")
   );
 }
+
+type MaybeTab = { title: string; url?: string };
+type BasicTab = { title: string; url: string };
 
 // ===== Action: click to toggle sidebar (and flip the per-window flag)
 chrome.action.onClicked.addListener(async (tab) => {
@@ -118,6 +122,28 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       all.unshift(msg.payload as SavedTab);
       await chrome.storage.local.set({ savedTabs: all });
       sendResponse({ ok: true });
+    })();
+    return true;
+  }
+
+  if (msg?.type === "AUTO_GROUP_TABS") {
+    (async () => {
+      const { tabs } = msg as { tabs: MaybeTab[] };
+
+      // we only need titles for the grouping prompt
+      const groupingPrompt =
+        `Categorize these tab titles into topic groups. ` +
+        `Respond as JSON with { "Group Name": [titles...] }.\n\nTabs:\n` +
+        tabs.map((t) => t.title).join("\n");
+
+      // normalize for summarizeTabs signature (url must be string)
+      const normalized: BasicTab[] = tabs.map((t) => ({
+        title: t.title,
+        url: t.url ?? "",
+      }));
+
+      const result = await summarizeTabs(normalized, groupingPrompt);
+      sendResponse({ ok: true, groups: result });
     })();
     return true;
   }
@@ -243,6 +269,25 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       const next = [...incoming, ...all];
       await chrome.storage.local.set({ savedTabs: next });
       sendResponse({ ok: true, count: incoming.length });
+    })();
+    return true;
+  }
+
+  if (msg?.type === "SUMMARIZE_TABS") {
+    (async () => {
+      const { tabs, prompt } = msg as { tabs: MaybeTab[]; prompt?: string };
+
+      const normalized: BasicTab[] = tabs.map((t) => ({
+        title: t.title,
+        url: t.url ?? "",
+      }));
+
+      try {
+        const summary = await summarizeTabs(normalized, prompt);
+        sendResponse({ ok: true, summary });
+      } catch (e) {
+        sendResponse({ ok: false, error: String(e) });
+      }
     })();
     return true;
   }
