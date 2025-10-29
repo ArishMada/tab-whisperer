@@ -1,4 +1,30 @@
 import { useEffect, useMemo, useState, useCallback } from "react";
+import { SummaryModal } from "../components/SummaryModal";
+
+function Spinner({ className = "h-4 w-4" }: { className?: string }) {
+  return (
+    <svg
+      className={`animate-spin ${className}`}
+      viewBox="0 0 24 24"
+      fill="none"
+      aria-hidden="true"
+    >
+      <circle
+        className="opacity-25"
+        cx="12"
+        cy="12"
+        r="10"
+        stroke="currentColor"
+        strokeWidth="4"
+      />
+      <path
+        className="opacity-75"
+        fill="currentColor"
+        d="M4 12a8 8 0 018-8v4A4 4 0 008 12H4z"
+      />
+    </svg>
+  );
+}
 
 type TabInfo = { id: number; title: string; url: string; favIconUrl?: string };
 type SavedTab = {
@@ -15,6 +41,11 @@ export default function Sidebar() {
   const [saved, setSaved] = useState<SavedTab[]>([]);
   const [loading, setLoading] = useState(false);
   const [view, setView] = useState<"all" | "saved">("all");
+
+  const [recapLoading, setRecapLoading] = useState(false);
+  const [autoGroupLoading, setAutoGroupLoading] = useState(false);
+  // track which group is being summarized; null = none
+  const [groupSummarizing, setGroupSummarizing] = useState<string | null>(null);
 
   // NEW: group picker state (open when saving/moving)
   const [showPicker, setShowPicker] = useState<null | {
@@ -184,6 +215,57 @@ export default function Sidebar() {
     setSelecting(false);
   }
 
+  const [summaryOpen, setSummaryOpen] = useState(false);
+  const [summaryText, setSummaryText] = useState("");
+
+  async function autoGroupSaved() {
+    setAutoGroupLoading(true);
+    try {
+      const res = await chrome.runtime.sendMessage({
+        type: "AUTO_GROUP_TABS",
+        tabs: saved.map((s) => ({ title: s.title, url: s.url })),
+      });
+
+      if (!res?.ok || !res.groups) {
+        setSummaryText("Auto-group failed: " + (res?.error ?? "Unknown error"));
+        setSummaryOpen(true);
+        return;
+      }
+
+      try {
+        // { "Group A": ["Title 1","Title 2"], "Group B": [...] }
+        const mapping = JSON.parse(res.groups) as Record<string, string[]>;
+        const titleToGroup = new Map<string, string>();
+        Object.entries(mapping).forEach(([group, titles]) => {
+          titles.forEach((t) => titleToGroup.set(t.toLowerCase(), group));
+        });
+
+        await Promise.all(
+          saved.map((s) => {
+            const newGroup = titleToGroup.get((s.title || "").toLowerCase());
+            if (newGroup && s.group !== newGroup) {
+              return chrome.runtime.sendMessage({
+                type: "UPDATE_SAVED_TAB",
+                id: s.id,
+                patch: { group: newGroup },
+              });
+            }
+            return Promise.resolve();
+          })
+        );
+
+        await loadSaved();
+      } catch (e) {
+        setSummaryText(
+          "Auto-group: AI response wasn’t valid JSON.\n\n" + String(e)
+        );
+        setSummaryOpen(true);
+      }
+    } finally {
+      setAutoGroupLoading(false);
+    }
+  }
+
   return (
     <div className="min-h-full bg-background text-foreground">
       <header className="sticky top-0 z-10 bg-background/80 backdrop-blur border-b">
@@ -265,27 +347,46 @@ export default function Sidebar() {
 
             {/* Recap all tabs (AI summary) */}
             <button
-              className="h-8 px-3 rounded-md border text-xs"
+              className="h-8 px-3 rounded-md border text-xs flex items-center gap-2 disabled:opacity-50"
+              disabled={recapLoading}
               onClick={async () => {
-                const allTabs = [...tabs, ...saved].map(({ title, url }) => ({
-                  title,
-                  url,
-                }));
-                const res = await chrome.runtime.sendMessage({
-                  type: "SUMMARIZE_TABS",
-                  tabs: allTabs,
-                  prompt:
-                    "Give a short recap of all browsing topics without detailed summaries.",
-                });
+                try {
+                  setRecapLoading(true);
+                  const allTabs = [...tabs, ...saved].map(({ title, url }) => ({
+                    title,
+                    url,
+                  }));
+                  const res = await chrome.runtime.sendMessage({
+                    type: "SUMMARIZE_TABS",
+                    tabs: allTabs,
+                    prompt:
+                      "Give a short recap of all browsing topics without detailed summaries.",
+                  });
 
-                if (res?.ok) {
-                  alert(`🧠 Recap:\n\n${res.summary}`);
-                } else {
-                  alert(`Error: ${res?.error ?? "Unknown error"}`);
+                  if (res?.ok) {
+                    setSummaryText(res.summary);
+                    setSummaryOpen(true);
+                  } else {
+                    setSummaryText(`Error: ${res?.error ?? "Unknown error"}`);
+                    setSummaryOpen(true);
+                  }
+                } finally {
+                  setRecapLoading(false);
                 }
               }}
             >
-              Recap
+              {recapLoading ? <Spinner /> : null}
+              <span>Recap</span>
+            </button>
+
+            <button
+              className="h-8 px-3 rounded-md border text-xs flex items-center gap-2 disabled:opacity-50"
+              disabled={autoGroupLoading}
+              onClick={autoGroupSaved}
+              title="Let AI group your saved tabs by topic"
+            >
+              {autoGroupLoading ? <Spinner /> : null}
+              <span>Auto-Group</span>
             </button>
 
             {view === "all" && selecting && (
@@ -457,31 +558,43 @@ export default function Sidebar() {
 
                     {/* AI summarize this group */}
                     <button
-                      className="text-xs px-2 py-1 rounded border ml-2"
+                      className="text-xs px-2 py-1 rounded border ml-2 flex items-center gap-2 disabled:opacity-50"
+                      disabled={groupSummarizing === groupName}
                       onClick={async () => {
-                        // `items` is the group's array you already map below
-                        const groupTabs = items.map(({ title, url }) => ({
-                          title,
-                          url,
-                        }));
-                        const userPrompt =
-                          prompt("Optional: Add extra instruction for AI") ||
-                          "";
+                        setGroupSummarizing(groupName);
+                        try {
+                          const groupTabs = items.map(({ title, url }) => ({
+                            title,
+                            url,
+                          }));
+                          const userPrompt =
+                            prompt("Optional: Add extra instruction for AI") ||
+                            "";
 
-                        const res = await chrome.runtime.sendMessage({
-                          type: "SUMMARIZE_TABS",
-                          tabs: groupTabs,
-                          prompt: userPrompt,
-                        });
+                          const res = await chrome.runtime.sendMessage({
+                            type: "SUMMARIZE_TABS",
+                            tabs: groupTabs,
+                            prompt: userPrompt,
+                          });
 
-                        if (res?.ok) {
-                          alert(`Summary:\n\n${res.summary}`);
-                        } else {
-                          alert(`Error: ${res?.error ?? "Unknown error"}`);
+                          if (res?.ok) {
+                            setSummaryText(res.summary);
+                            setSummaryOpen(true);
+                          } else {
+                            setSummaryText(
+                              `Error: ${res?.error ?? "Unknown error"}`
+                            );
+                            setSummaryOpen(true);
+                          }
+                        } finally {
+                          setGroupSummarizing(null);
                         }
                       }}
                     >
-                      Summarize
+                      {groupSummarizing === groupName ? (
+                        <Spinner className="h-3.5 w-3.5" />
+                      ) : null}
+                      <span>Summarize</span>
                     </button>
 
                     {/* kebab menu */}
@@ -687,6 +800,13 @@ export default function Sidebar() {
           </div>
         </div>
       )}
+      {/* AI Summary modal */}
+      <SummaryModal
+        open={summaryOpen}
+        onClose={() => setSummaryOpen(false)}
+        title="AI Summary"
+        summary={summaryText}
+      />
     </div>
   );
 }
