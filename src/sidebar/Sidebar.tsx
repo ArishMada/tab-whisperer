@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, useCallback } from "react";
 
 type TabInfo = { id: number; title: string; url: string; favIconUrl?: string };
 type SavedTab = {
@@ -30,38 +30,96 @@ export default function Sidebar() {
     return Array.from(set).sort((a, b) => a.localeCompare(b));
   }, [saved]);
 
+  const [query, setQuery] = useState("");
+  const [sortBy, setSortBy] = useState<"recent" | "title" | "site">("recent");
+
+  // 1) filter + sort flat list
+  const visibleSaved = useMemo(() => {
+    let list = [...saved];
+
+    // filter
+    if (query.trim()) {
+      const q = query.toLowerCase();
+      list = list.filter((s) => {
+        const host = (() => {
+          try {
+            return new URL(s.url).hostname;
+          } catch {
+            return "";
+          }
+        })();
+        return (
+          (s.title || "").toLowerCase().includes(q) ||
+          host.toLowerCase().includes(q)
+        );
+      });
+    }
+
+    // sort
+    switch (sortBy) {
+      case "title":
+        list.sort((a, b) => (a.title || "").localeCompare(b.title || ""));
+        break;
+      case "site":
+        list.sort((a, b) => {
+          const ah = (() => {
+            try {
+              return new URL(a.url).hostname;
+            } catch {
+              return "";
+            }
+          })();
+          const bh = (() => {
+            try {
+              return new URL(b.url).hostname;
+            } catch {
+              return "";
+            }
+          })();
+          return ah.localeCompare(bh);
+        });
+        break;
+      default: // "recent"
+        list.sort((a, b) => b.savedAt - a.savedAt);
+    }
+
+    return list;
+  }, [saved, query, sortBy]);
+
+  // 2) group the already-filtered list
   const groupedSaved = useMemo(() => {
     const m = new Map<string, SavedTab[]>();
-    for (const s of saved) {
+    for (const s of visibleSaved) {
       const key = s.group ?? "Ungrouped";
       if (!m.has(key)) m.set(key, []);
       m.get(key)!.push(s);
     }
     return Array.from(m.entries()).sort(([a], [b]) => a.localeCompare(b));
-  }, [saved]);
+  }, [visibleSaved]);
 
   const inExtension = useMemo(
     () => typeof chrome !== "undefined" && !!chrome.runtime?.id,
     []
   );
 
-  async function loadTabs() {
+  const loadTabs = useCallback(async () => {
     if (!inExtension) return;
     setLoading(true);
     const res = await chrome.runtime.sendMessage({ type: "GET_TABS_SNAPSHOT" });
     setTabs(res?.tabs ?? []);
     setLoading(false);
-  }
-  async function loadSaved() {
+  }, [inExtension]);
+
+  const loadSaved = useCallback(async () => {
     if (!inExtension) return;
     const res = await chrome.runtime.sendMessage({ type: "GET_SAVED_TABS" });
     setSaved(res?.tabs ?? []);
-  }
+  }, [inExtension]);
 
   useEffect(() => {
     loadTabs();
     loadSaved();
-  }, [inExtension]);
+  }, [loadTabs, loadSaved]);
 
   // saving now opens the group picker instead of saving immediately
   function startSave(t: TabInfo) {
@@ -103,18 +161,46 @@ export default function Sidebar() {
     await loadSaved();
   }
 
+  const [selecting, setSelecting] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
+
+  function toggleOne(id: number) {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) {
+        next.delete(id);
+      } else {
+        next.add(id);
+      }
+      return next;
+    });
+  }
+
+  function selectAllVisible() {
+    setSelectedIds(new Set(tabs.map((t) => t.id)));
+  }
+  function clearSelection() {
+    setSelectedIds(new Set());
+    setSelecting(false);
+  }
+
   return (
     <div className="min-h-full bg-background text-foreground">
       <header className="sticky top-0 z-10 bg-background/80 backdrop-blur border-b">
         <div className="px-3 py-2 flex items-center gap-2">
           <span className="text-lg font-semibold">Tab Whisperer</span>
 
+          {/* All / Saved toggle */}
           <div className="ml-2 flex items-center gap-1 text-xs border rounded p-1">
             <button
               className={`px-2 py-0.5 rounded ${
                 view === "all" ? "bg-secondary" : ""
               }`}
-              onClick={() => setView("all")}
+              onClick={() => {
+                setView("all");
+                setSelecting(false);
+                clearSelection();
+              }}
             >
               All
             </button>
@@ -122,27 +208,105 @@ export default function Sidebar() {
               className={`px-2 py-0.5 rounded ${
                 view === "saved" ? "bg-secondary" : ""
               }`}
-              onClick={() => setView("saved")}
+              onClick={() => {
+                setView("saved");
+                setSelecting(false);
+                clearSelection();
+              }}
             >
               Saved
             </button>
           </div>
 
-          <button
-            className="ml-auto h-8 px-3 rounded-md border text-xs"
-            onClick={loadTabs}
-          >
-            Refresh
-          </button>
-          <button
-            className="h-8 w-8 flex items-center justify-center rounded-md border"
-            title="Close"
-            onClick={() =>
-              chrome.runtime.sendMessage({ type: "CLOSE_SIDEBAR" })
-            }
-          >
-            ✕
-          </button>
+          {/* Search + Sort (only in Saved)*/}
+          {view === "saved" && (
+            <div className="ml-2 flex items-center gap-2">
+              <input
+                className="h-8 px-2 rounded-md border text-xs w-40"
+                placeholder="Search title or site…"
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+              />
+              <select
+                className="h-8 px-2 rounded-md border text-xs"
+                value={sortBy}
+                onChange={(e) =>
+                  setSortBy(e.target.value as "recent" | "title" | "site")
+                }
+                title="Sort saved tabs"
+              >
+                <option value="recent">Recently saved</option>
+                <option value="title">Title A–Z</option>
+                <option value="site">Site A–Z</option>
+              </select>
+            </div>
+          )}
+
+          {/* Right-side controls */}
+          <div className="ml-auto flex items-center gap-2">
+            {/* In All view: Select / bulk actions */}
+            {view === "all" && !selecting && (
+              <>
+                <button
+                  className="h-8 px-3 rounded-md border text-xs"
+                  onClick={loadTabs}
+                >
+                  Refresh
+                </button>
+                <button
+                  className="h-8 px-3 rounded-md border text-xs"
+                  onClick={() => setSelecting(true)}
+                  title="Select multiple tabs to save"
+                >
+                  Select
+                </button>
+              </>
+            )}
+
+            {view === "all" && selecting && (
+              <>
+                <span className="text-xs opacity-70">
+                  {selectedIds.size} selected
+                </span>
+                <button
+                  className="h-8 px-3 rounded-md border text-xs"
+                  onClick={selectAllVisible}
+                >
+                  Select all
+                </button>
+                <button
+                  className="h-8 px-3 rounded-md border text-xs bg-primary text-primary-foreground disabled:opacity-50"
+                  disabled={selectedIds.size === 0}
+                  onClick={() => {
+                    // open picker to choose group for bulk save
+                    setShowPicker({
+                      mode: "save",
+                      tab: { id: -1, title: "", url: "" } as TabInfo, // typed placeholder
+                    });
+                  }}
+                >
+                  Save ({selectedIds.size})
+                </button>
+                <button
+                  className="h-8 px-3 rounded-md border text-xs"
+                  onClick={clearSelection}
+                >
+                  Cancel
+                </button>
+              </>
+            )}
+
+            {/* Close */}
+            <button
+              className="h-8 w-8 flex items-center justify-center rounded-md border"
+              title="Close"
+              onClick={() =>
+                chrome.runtime.sendMessage({ type: "CLOSE_SIDEBAR" })
+              }
+            >
+              ✕
+            </button>
+          </div>
         </div>
       </header>
 
@@ -159,6 +323,15 @@ export default function Sidebar() {
                   key={t.id}
                   className="p-2 rounded-lg border flex items-center gap-3"
                 >
+                  {selecting && (
+                    <input
+                      type="checkbox"
+                      className="h-4 w-4"
+                      checked={selectedIds.has(t.id)}
+                      onChange={() => toggleOne(t.id)}
+                    />
+                  )}
+
                   <img
                     src={
                       t.favIconUrl || chrome.runtime.getURL("icons/Logo.png")
@@ -271,16 +444,20 @@ export default function Sidebar() {
 
                       {menuFor === groupName && (
                         <div className="absolute right-0 mt-1 w-44 rounded-md border bg-background shadow-lg z-20">
-                          <button
-                            className="w-full text-left px-3 py-2 text-sm hover:bg-muted"
-                            onClick={() => {
-                              setRenaming(groupName);
-                              setRenameValue(groupName);
-                              setMenuFor(null);
-                            }}
-                          >
-                            Rename
-                          </button>
+                          {/* Only show Rename if not Ungrouped */}
+                          {groupName !== "Ungrouped" && (
+                            <button
+                              className="w-full text-left px-3 py-2 text-sm hover:bg-muted"
+                              onClick={() => {
+                                setRenaming(groupName);
+                                setRenameValue(groupName);
+                                setMenuFor(null);
+                              }}
+                            >
+                              Rename
+                            </button>
+                          )}
+
                           <button
                             className="w-full text-left px-3 py-2 text-sm hover:bg-muted"
                             onClick={() => setConfirmDelete(groupName)}
@@ -363,6 +540,34 @@ export default function Sidebar() {
           }
           onCancel={() => setShowPicker(null)}
           onSubmit={async (groupName) => {
+            // Are we in bulk-select mode?
+            if (view === "all" && selecting && selectedIds.size > 0) {
+              // Build payloads from selected open tabs
+              const chosenTabs = tabs.filter((t) => selectedIds.has(t.id));
+              const payload = chosenTabs.map<SavedTab>((t) => ({
+                id: `${t.id}-${Date.now()}-${Math.random()
+                  .toString(36)
+                  .slice(2, 7)}`,
+                title: t.title || "(No title)",
+                url: t.url,
+                favIconUrl: t.favIconUrl,
+                savedAt: Date.now(),
+                group: groupName || undefined,
+              }));
+              const res = await chrome.runtime.sendMessage({
+                type: "SAVE_TABS_BULK",
+                payload,
+              });
+              if (res?.ok) {
+                await loadSaved();
+                setView("saved");
+                clearSelection();
+              }
+              setShowPicker(null);
+              return;
+            }
+
+            // ----- existing single-save / move logic (unchanged) -----
             if (showPicker.mode === "save") {
               const t = showPicker.tab as TabInfo;
               const payload: SavedTab = {
@@ -397,14 +602,18 @@ export default function Sidebar() {
             <p className="text-sm opacity-80 mb-4">
               What should we do with the tabs in “{confirmDelete}”?
             </p>
+
             <div className="flex flex-col gap-2">
-              <button
-                className="px-3 py-2 border rounded text-left hover:bg-muted"
-                disabled={confirmDelete === "Ungrouped"}
-                onClick={() => doDeleteGroup(confirmDelete, "ungroup")}
-              >
-                Move items to <strong>Ungrouped</strong>
-              </button>
+              {/* Only show this option when deleting a real group (NOT Ungrouped) */}
+              {confirmDelete !== "Ungrouped" && (
+                <button
+                  className="px-3 py-2 border rounded text-left hover:bg-muted"
+                  onClick={() => doDeleteGroup(confirmDelete, "ungroup")}
+                >
+                  Move items to <strong>Ungrouped</strong>
+                </button>
+              )}
+
               <button
                 className="px-3 py-2 border rounded text-left hover:bg-muted"
                 onClick={() => doDeleteGroup(confirmDelete, "remove")}

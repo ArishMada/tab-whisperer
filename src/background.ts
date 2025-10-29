@@ -152,7 +152,12 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
 
   if (msg?.type === "RENAME_GROUP") {
     (async () => {
-      const { from, to } = msg;
+      const { from, to } = msg as { from: string; to: string };
+      if (from === "Ungrouped") {
+        // hard guard
+        sendResponse({ ok: false, error: "CANNOT_RENAME_UNGROUPED" });
+        return;
+      }
       await renameGroup(from, to);
       const { savedTabs } = await chrome.storage.local.get("savedTabs");
       sendResponse({ ok: true, tabs: (savedTabs ?? []) as SavedTab[] });
@@ -178,6 +183,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
             : all.map((t) => (belongs(t) ? { ...t, group: undefined } : t));
 
         await chrome.storage.local.set({ savedTabs: next });
+        sendResponse({ ok: true });
 
         // IMPORTANT: reply so the Promise on the UI side resolves
         sendResponse({ ok: true, tabs: next });
@@ -186,6 +192,59 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       }
     })();
     return true; // keep channel open for async sendResponse
+  }
+
+  // SAVE ALL TABS IN CURRENT WINDOW
+  if (msg?.type === "SAVE_ALL_IN_WINDOW") {
+    (async () => {
+      const { windowId } = msg as { windowId?: number };
+      const [active] = await chrome.tabs.query({
+        active: true,
+        currentWindow: true,
+      });
+      const winId = windowId ?? active?.windowId;
+
+      if (winId == null) {
+        sendResponse({ ok: false, error: "NO_WINDOW" });
+        return;
+      }
+
+      const tabs = await chrome.tabs.query({ windowId: winId });
+      const now = Date.now();
+
+      const toSave = tabs
+        .filter((t) => !isRestricted(t.url))
+        .map(
+          (t) =>
+            ({
+              id: `${t.id}-${now}-${Math.random().toString(36).slice(2, 7)}`,
+              title: t.title || "(No title)",
+              url: t.url || "",
+              favIconUrl: t.favIconUrl,
+              savedAt: now,
+            } satisfies SavedTab)
+        );
+
+      const { savedTabs } = await chrome.storage.local.get("savedTabs");
+      const all: SavedTab[] = savedTabs ?? [];
+
+      await chrome.storage.local.set({ savedTabs: [...toSave, ...all] });
+      sendResponse({ ok: true, count: toSave.length });
+    })();
+    return true;
+  }
+
+  if (msg?.type === "SAVE_TABS_BULK") {
+    (async () => {
+      const { savedTabs } = await chrome.storage.local.get("savedTabs");
+      const all: SavedTab[] = savedTabs ?? [];
+      const incoming: SavedTab[] = (msg.payload ?? []) as SavedTab[];
+      // newest first like single SAVE_TAB
+      const next = [...incoming, ...all];
+      await chrome.storage.local.set({ savedTabs: next });
+      sendResponse({ ok: true, count: incoming.length });
+    })();
+    return true;
   }
 
   return undefined;
