@@ -1,4 +1,5 @@
 import type { SavedTab } from "./lib/storage";
+import { renameGroup } from "./lib/storage";
 
 const OPEN_KEY_PREFIX = "tw_open_"; // session-scoped
 const openKey = (winId: number) => `${OPEN_KEY_PREFIX}${winId}`;
@@ -133,10 +134,63 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     return true;
   }
 
+  if (msg?.type === "UPDATE_SAVED_TAB") {
+    (async () => {
+      const { savedTabs } = await chrome.storage.local.get("savedTabs");
+      const all: SavedTab[] = savedTabs ?? [];
+      const i = all.findIndex((t) => t.id === msg.id);
+      if (i >= 0) {
+        all[i] = { ...all[i], ...(msg.patch ?? {}) }; // e.g. { group: "Research" }
+        await chrome.storage.local.set({ savedTabs: all });
+        sendResponse({ ok: true, tab: all[i] });
+      } else {
+        sendResponse({ ok: false, error: "NOT_FOUND" });
+      }
+    })();
+    return true;
+  }
+
+  if (msg?.type === "RENAME_GROUP") {
+    (async () => {
+      const { from, to } = msg;
+      await renameGroup(from, to);
+      const { savedTabs } = await chrome.storage.local.get("savedTabs");
+      sendResponse({ ok: true, tabs: (savedTabs ?? []) as SavedTab[] });
+    })();
+    return true;
+  }
+
+  if (msg?.type === "DELETE_GROUP") {
+    (async () => {
+      try {
+        const { name, mode } = msg as {
+          name: string;
+          mode: "ungroup" | "remove";
+        };
+        const { savedTabs } = await chrome.storage.local.get("savedTabs");
+        const all: SavedTab[] = (savedTabs ?? []) as SavedTab[];
+
+        const belongs = (t: SavedTab) =>
+          name === "Ungrouped" ? !t.group : t.group === name;
+        const next =
+          mode === "remove"
+            ? all.filter((t) => !belongs(t))
+            : all.map((t) => (belongs(t) ? { ...t, group: undefined } : t));
+
+        await chrome.storage.local.set({ savedTabs: next });
+
+        // IMPORTANT: reply so the Promise on the UI side resolves
+        sendResponse({ ok: true, tabs: next });
+      } catch (e) {
+        sendResponse({ ok: false, error: String(e) });
+      }
+    })();
+    return true; // keep channel open for async sendResponse
+  }
+
   return undefined;
 });
 
-// ===== Follow the sidebar across tabs in the same window
 chrome.tabs.onActivated.addListener(async ({ tabId, windowId }) => {
   if (await isOpen(windowId)) {
     try {

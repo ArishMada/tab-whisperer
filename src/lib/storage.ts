@@ -28,3 +28,23 @@ export async function removeSaved(id: string) {
   const all = await getSaved();
   await setSaved(all.filter((x) => x.id !== id));
 }
+
+export async function renameGroup(oldName: string, newName: string) {
+  const tabs = await getSaved();
+  const next = tabs.map((t) =>
+    t.group === oldName ? { ...t, group: newName } : t
+  );
+  await setSaved(next);
+}
+
+export async function deleteGroup(
+  name: string,
+  mode: "ungroup" | "remove" = "ungroup"
+) {
+  const tabs = await getSaved();
+  const next =
+    mode === "remove"
+      ? tabs.filter((t) => t.group !== name)
+      : tabs.map((t) => (t.group === name ? { ...t, group: undefined } : t));
+  await setSaved(next);
+}
