@@ -61,8 +61,8 @@ export default function Sidebar() {
     return Array.from(set).sort((a, b) => a.localeCompare(b));
   }, [saved]);
 
-  const [query, setQuery] = useState("");
-  const [sortBy, setSortBy] = useState<"recent" | "title" | "site">("recent");
+  const [query] = useState("");
+  const [sortBy] = useState<"recent" | "title" | "site">("recent");
 
   // 1) filter + sort flat list
   const visibleSaved = useMemo(() => {
@@ -267,176 +267,205 @@ export default function Sidebar() {
   }
 
   return (
-    <div className="min-h-full bg-background text-foreground">
-      <header className="sticky top-0 z-10 bg-background/80 backdrop-blur border-b">
-        <div className="px-3 py-2 flex items-center gap-2">
-          <span className="text-lg font-semibold">Tab Whisperer</span>
-
-          {/* All / Saved toggle */}
-          <div className="ml-2 flex items-center gap-1 text-xs border rounded p-1">
-            <button
-              className={`px-2 py-0.5 rounded ${
-                view === "all" ? "bg-secondary" : ""
-              }`}
-              onClick={() => {
-                setView("all");
-                setSelecting(false);
-                clearSelection();
-              }}
-            >
-              All
-            </button>
-            <button
-              className={`px-2 py-0.5 rounded ${
-                view === "saved" ? "bg-secondary" : ""
-              }`}
-              onClick={() => {
-                setView("saved");
-                setSelecting(false);
-                clearSelection();
-              }}
-            >
-              Saved
-            </button>
+    <div
+      className="min-h-full text-foreground
+    bg-white/40 dark:bg-neutral-900/50
+    backdrop-blur-lg
+    border-l border-white/20 dark:border-white/10"
+    >
+      <header className="sticky top-0 z-20 bg-background/80 backdrop-blur border-b px-3 py-2 flex flex-col gap-2">
+        {/* Row 1: wordmark + buttons */}
+        <div className="flex items-center justify-between">
+          {/* Wordmark with logo chip + accent underline */}
+          <div className="relative">
+            <div className="flex items-center gap-2">
+              <img
+                src={chrome.runtime.getURL("icons/Logo.png")}
+                alt=""
+                className="h-5 w-5 rounded-sm shadow-sm"
+              />
+              <span className="text-base font-semibold tracking-tight">
+                Tab Whisperer
+              </span>
+            </div>
+            <div className="absolute left-7 right-0 -bottom-1 h-[2px] rounded-full bg-gradient-to-r from-primary/70 via-primary to-primary/40" />
           </div>
 
-          {/* Search + Sort (only in Saved)*/}
-          {view === "saved" && (
-            <div className="ml-2 flex items-center gap-2">
-              <input
-                className="h-8 px-2 rounded-md border text-xs w-40"
-                placeholder="Search title or site…"
-                value={query}
-                onChange={(e) => setQuery(e.target.value)}
-              />
-              <select
-                className="h-8 px-2 rounded-md border text-xs"
-                value={sortBy}
-                onChange={(e) =>
-                  setSortBy(e.target.value as "recent" | "title" | "site")
-                }
-                title="Sort saved tabs"
+          {/* Matched circular icon buttons */}
+          <div className="flex items-center gap-1">
+            <button
+              aria-label="Refresh"
+              title="Refresh tabs"
+              onClick={loadTabs}
+              className="h-7 w-7 rounded-full border bg-background shadow-sm hover:bg-accent hover:shadow transition flex items-center justify-center"
+            >
+              {/* Refresh icon */}
+              <svg
+                xmlns="http://www.w3.org/2000/svg"
+                className="w-4 h-4"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
               >
-                <option value="recent">Recently saved</option>
-                <option value="title">Title A–Z</option>
-                <option value="site">Site A–Z</option>
-              </select>
-            </div>
-          )}
-
-          {/* Right-side controls */}
-          <div className="ml-auto flex items-center gap-2">
-            {/* In All view: Select / bulk actions */}
-            {view === "all" && !selecting && (
-              <>
-                <button
-                  className="h-8 px-3 rounded-md border text-xs"
-                  onClick={loadTabs}
-                >
-                  Refresh
-                </button>
-                <button
-                  className="h-8 px-3 rounded-md border text-xs"
-                  onClick={() => setSelecting(true)}
-                  title="Select multiple tabs to save"
-                >
-                  Select
-                </button>
-              </>
-            )}
-
-            {/* Recap all tabs (AI summary) */}
-            <button
-              className="h-8 px-3 rounded-md border text-xs flex items-center gap-2 disabled:opacity-50"
-              disabled={recapLoading}
-              onClick={async () => {
-                try {
-                  setRecapLoading(true);
-                  const allTabs = [...tabs, ...saved].map(({ title, url }) => ({
-                    title,
-                    url,
-                  }));
-                  const res = await chrome.runtime.sendMessage({
-                    type: "SUMMARIZE_TABS",
-                    tabs: allTabs,
-                    prompt:
-                      "Give a short recap of all browsing topics without detailed summaries.",
-                  });
-
-                  if (res?.ok) {
-                    setSummaryText(res.summary);
-                    setSummaryOpen(true);
-                  } else {
-                    setSummaryText(`Error: ${res?.error ?? "Unknown error"}`);
-                    setSummaryOpen(true);
-                  }
-                } finally {
-                  setRecapLoading(false);
-                }
-              }}
-            >
-              {recapLoading ? <Spinner /> : null}
-              <span>Recap</span>
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  d="M4 4v6h6M20 20v-6h-6M4 10a8 8 0 0115.88-2M20 14a8 8 0 01-15.88 2"
+                />
+              </svg>
             </button>
 
             <button
-              className="h-8 px-3 rounded-md border text-xs flex items-center gap-2 disabled:opacity-50"
-              disabled={autoGroupLoading}
-              onClick={autoGroupSaved}
-              title="Let AI group your saved tabs by topic"
-            >
-              {autoGroupLoading ? <Spinner /> : null}
-              <span>Auto-Group</span>
-            </button>
-
-            {view === "all" && selecting && (
-              <>
-                <span className="text-xs opacity-70">
-                  {selectedIds.size} selected
-                </span>
-                <button
-                  className="h-8 px-3 rounded-md border text-xs"
-                  onClick={selectAllVisible}
-                >
-                  Select all
-                </button>
-                <button
-                  className="h-8 px-3 rounded-md border text-xs bg-primary text-primary-foreground disabled:opacity-50"
-                  disabled={selectedIds.size === 0}
-                  onClick={() => {
-                    // open picker to choose group for bulk save
-                    setShowPicker({
-                      mode: "save",
-                      tab: { id: -1, title: "", url: "" } as TabInfo, // typed placeholder
-                    });
-                  }}
-                >
-                  Save ({selectedIds.size})
-                </button>
-                <button
-                  className="h-8 px-3 rounded-md border text-xs"
-                  onClick={clearSelection}
-                >
-                  Cancel
-                </button>
-              </>
-            )}
-
-            {/* Close */}
-            <button
-              className="h-8 w-8 flex items-center justify-center rounded-md border"
-              title="Close"
+              aria-label="Close"
+              title="Close sidebar"
               onClick={() =>
                 chrome.runtime.sendMessage({ type: "CLOSE_SIDEBAR" })
               }
+              className="h-7 w-7 rounded-full border bg-background shadow-sm hover:bg-accent hover:shadow transition flex items-center justify-center"
             >
-              ✕
+              <span className="text-[12px] leading-none">✕</span>
             </button>
           </div>
         </div>
+
+        {/* Row 2: 50/50 All/Saved */}
+        <div className="grid grid-cols-2 gap-2">
+          <button
+            className={`h-8 rounded-md border text-xs w-full ${
+              view === "all" ? "bg-secondary" : "hover:bg-accent"
+            }`}
+            onClick={() => {
+              setView("all");
+              setSelecting(false);
+              clearSelection();
+            }}
+          >
+            All
+          </button>
+          <button
+            className={`h-8 rounded-md border text-xs w-full ${
+              view === "saved" ? "bg-secondary" : "hover:bg-accent"
+            }`}
+            onClick={() => {
+              setView("saved");
+              setSelecting(false);
+              clearSelection();
+            }}
+          >
+            Saved
+          </button>
+        </div>
+
+        {/* Row 3: action buttons */}
+        <div className="grid grid-cols-3 gap-2">
+          <button
+            className="h-8 px-3 rounded-md border text-xs flex items-center justify-center gap-2 disabled:opacity-50 hover:bg-accent"
+            disabled={recapLoading}
+            onClick={async () => {
+              try {
+                setRecapLoading(true);
+                const allTabs = [...tabs, ...saved].map(({ title, url }) => ({
+                  title,
+                  url,
+                }));
+                const res = await chrome.runtime.sendMessage({
+                  type: "SUMMARIZE_TABS",
+                  tabs: allTabs,
+                  prompt:
+                    "Give a short recap of all browsing topics without detailed summaries.",
+                });
+                if (res?.ok) {
+                  setSummaryText(res.summary);
+                  setSummaryOpen(true);
+                } else {
+                  setSummaryText(`Error: ${res?.error ?? "Unknown error"}`);
+                  setSummaryOpen(true);
+                }
+              } finally {
+                setRecapLoading(false);
+              }
+            }}
+          >
+            {recapLoading ? <Spinner className="h-3.5 w-3.5" /> : null}
+            <span>Recap</span>
+          </button>
+
+          <button
+            className="h-8 px-3 rounded-md border text-xs flex items-center justify-center gap-2 disabled:opacity-50 hover:bg-accent"
+            disabled={autoGroupLoading}
+            onClick={autoGroupSaved}
+            title="Let AI group your saved tabs by topic"
+          >
+            {autoGroupLoading ? <Spinner className="h-3.5 w-3.5" /> : null}
+            <span>Auto-Group</span>
+          </button>
+
+          {view === "all" && !selecting ? (
+            <button
+              className="h-8 px-3 rounded-md border text-xs hover:bg-accent"
+              onClick={() => setSelecting(true)}
+              title="Select multiple tabs to save"
+            >
+              Select
+            </button>
+          ) : (
+            <button
+              className="h-8 px-3 rounded-md border text-xs hover:bg-accent"
+              onClick={() => setSelecting(false)}
+            >
+              Done
+            </button>
+          )}
+
+          {/* Selection actions */}
+          {view === "all" && selecting && (
+            <>
+              <span className="text-xs opacity-70">
+                {selectedIds.size} selected
+              </span>
+              <button
+                className="h-7 px-3 rounded-md border"
+                onClick={selectAllVisible}
+              >
+                Select all
+              </button>
+              <button
+                className="h-7 px-3 rounded-md border bg-primary text-primary-foreground disabled:opacity-50"
+                disabled={selectedIds.size === 0}
+                onClick={() => {
+                  setShowPicker({
+                    mode: "save",
+                    tab: { id: -1, title: "", url: "" } as TabInfo,
+                  });
+                }}
+              >
+                Save ({selectedIds.size})
+              </button>
+              <button
+                className="h-7 px-3 rounded-md border"
+                onClick={clearSelection}
+              >
+                Cancel
+              </button>
+            </>
+          )}
+        </div>
       </header>
 
-      <main className="p-3 space-y-3">
+      {/* Watermark logo background */}
+      <div
+        aria-hidden
+        className="pointer-events-none fixed z-0 inset-0 flex items-center justify-center opacity-10"
+        style={{
+          backgroundImage: `url(${chrome.runtime.getURL("icons/Logo.png")})`,
+          backgroundRepeat: "no-repeat",
+          backgroundPosition: "center",
+          backgroundSize: "220px", // tweak size here
+        }}
+      />
+
+      <main className="relative z-10 p-3 space-y-3">
         {view === "all" && (
           <>
             {loading && <div className="text-sm opacity-70">Loading…</div>}
@@ -447,7 +476,7 @@ export default function Sidebar() {
               {tabs.map((t) => (
                 <li
                   key={t.id}
-                  className="p-2 rounded-lg border flex items-center gap-3"
+                  className="p-2 rounded-lg border bg-card shadow-sm flex items-center gap-3"
                 >
                   {selecting && (
                     <input
@@ -641,7 +670,7 @@ export default function Sidebar() {
                       {items.map((s) => (
                         <li
                           key={s.id}
-                          className="p-2 rounded-lg border flex items-center gap-3"
+                          className="p-2 rounded-lg border bg-card shadow-sm flex items-center gap-3"
                         >
                           <img
                             src={
