@@ -1,6 +1,7 @@
 import type { SavedTab } from "./lib/storage";
 import { renameGroup } from "./lib/storage";
 import { summarizeTabs } from "./lib/gemini";
+import { groupTabsByIdStrict } from "./lib/gemini";
 
 const OPEN_KEY_PREFIX = "tw_open_"; // session-scoped
 const openKey = (winId: number) => `${OPEN_KEY_PREFIX}${winId}`;
@@ -128,22 +129,125 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
 
   if (msg?.type === "AUTO_GROUP_TABS") {
     (async () => {
-      const { tabs } = msg as { tabs: MaybeTab[] };
+      try {
+        // Expect: saved tabs only, supply id+title (no URLs)
+        const { tabs } = msg as { tabs: Pick<SavedTab, "id" | "title">[] };
 
-      // we only need titles for the grouping prompt
-      const groupingPrompt =
-        `Categorize these tab titles into topic groups. ` +
-        `Respond as JSON with { "Group Name": [titles...] }.\n\nTabs:\n` +
-        tabs.map((t) => t.title).join("\n");
+        const aiJson = await groupTabsByIdStrict(
+          tabs.map((t) => ({ id: t.id, title: t.title || "(No title)" }))
+        );
 
-      // normalize for summarizeTabs signature (url must be string)
-      const normalized: BasicTab[] = tabs.map((t) => ({
-        title: t.title,
-        url: t.url ?? "",
-      }));
+        // The UI will pass this back via APPLY_GROUPS for a single write
+        sendResponse({ ok: true, groups: aiJson });
+      } catch (e) {
+        sendResponse({ ok: false, error: String(e) });
+      }
+    })();
+    return true;
+  }
 
-      const result = await summarizeTabs(normalized, groupingPrompt);
-      sendResponse({ ok: true, groups: result });
+  if (msg?.type === "APPLY_GROUPS") {
+    (async () => {
+      try {
+        // payload: { "<GroupName>":[ "<tabId>", ... ], ... }
+        const mapping = (msg.payload ?? {}) as Record<string, string[]>;
+        const { savedTabs } = await chrome.storage.local.get("savedTabs");
+        const all: SavedTab[] = (savedTabs ?? []) as SavedTab[];
+
+        // Build reverse index id -> group
+        const idToGroup = new Map<string, string>();
+        for (const [group, ids] of Object.entries(mapping)) {
+          for (const id of ids) idToGroup.set(id, group);
+        }
+
+        const next = all.map((t) => {
+          const g = idToGroup.get(t.id);
+          return g ? { ...t, group: g } : t;
+        });
+
+        await chrome.storage.local.set({ savedTabs: next });
+        sendResponse({ ok: true, count: idToGroup.size });
+      } catch (e) {
+        sendResponse({ ok: false, error: String(e) });
+      }
+    })();
+    return true;
+  }
+
+  // 1) Group currently open tabs (by id)
+  if (msg?.type === "AUTO_GROUP_OPEN_TABS") {
+    (async () => {
+      try {
+        const all = await chrome.tabs.query({ currentWindow: true });
+        // take only what's needed for prompting
+        const skinny = all
+          .filter((t) => !!t.id)
+          .map((t) => ({ id: String(t.id), title: t.title || "(No title)" }));
+
+        const groupsJson = await groupTabsByIdStrict(skinny); // <- returns minified JSON
+        sendResponse({ ok: true, groups: groupsJson, tabs: skinny }); // return skinny so UI can render titles under groups
+      } catch (e) {
+        sendResponse({ ok: false, error: String(e) });
+      }
+    })();
+    return true;
+  }
+
+  // 2) Save selected groups (mapping: {GroupName:[tabId,…]})
+  if (msg?.type === "SAVE_OPEN_GROUPS") {
+    (async () => {
+      try {
+        const mapping = (msg.payload ?? {}) as Record<string, string[]>;
+
+        const openTabs = await chrome.tabs.query({ currentWindow: true });
+        const byId = new Map<string, chrome.tabs.Tab>();
+        for (const t of openTabs) if (t.id != null) byId.set(String(t.id), t);
+
+        // load current saved (narrow the unknown shape into SavedTab[])
+        const store = await chrome.storage.local.get("savedTabs");
+        const existing = store.savedTabs;
+        const current: SavedTab[] = Array.isArray(existing)
+          ? (existing as SavedTab[])
+          : [];
+
+        // reverse map id->group for quick lookup
+        const idToGroup = new Map<string, string>();
+        for (const [g, ids] of Object.entries(mapping)) {
+          for (const id of ids) idToGroup.set(id, g);
+        }
+
+        // upsert selected tabs into savedTabs with assigned group
+        const have = new Map<string, SavedTab>(
+          current.map((t) => [String(t.id), t])
+        );
+
+        for (const [id, group] of idToGroup.entries()) {
+          const t = byId.get(id);
+          if (!t) continue;
+
+          const prev = have.get(id);
+          const entry: SavedTab = {
+            // preserve previous fields if present
+            ...(prev ?? ({} as SavedTab)),
+            id,
+            url: t.url ?? "",
+            title: t.title ?? "",
+            favIconUrl: t.favIconUrl ?? "",
+            group,
+            // keep a savedAt if your SavedTab requires/uses it
+            // (fallback to previous or set now)
+            savedAt: (prev as { savedAt?: number })?.savedAt ?? Date.now(),
+          };
+
+          have.set(id, entry);
+        }
+
+        const next: SavedTab[] = Array.from(have.values());
+        await chrome.storage.local.set({ savedTabs: next });
+        sendResponse({ ok: true, savedCount: idToGroup.size });
+      } catch (e) {
+        sendResponse({ ok: false, error: String(e) });
+      }
     })();
     return true;
   }

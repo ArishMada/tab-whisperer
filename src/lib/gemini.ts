@@ -141,3 +141,40 @@ export async function summarizeTabs(
     return await postGenerateContent(model, prompt);
   }
 }
+
+export async function groupTabsByIdStrict(
+  items: { id: string; title: string }[]
+): Promise<string> {
+  const list = items
+    .map((i) => `- id: ${i.id}\n  title: ${i.title}`)
+    .join("\n");
+
+  const prompt = `You are a strict JSON generator. Group the tabs by topic.
+
+RULES:
+- Return ONLY minified JSON, no markdown, no commentary.
+- Shape: {"<GroupName>":["<tabId>", "..."], "..."}.
+- Use at most 8 groups. Prefer short, human-readable names.
+- Do NOT invent ids or titles. Use the provided ids exactly.
+- If something doesn't fit a clear topic, put it in "Misc".
+- Never include URLs.
+
+TABS:
+${list}
+
+Return JSON now:`;
+
+  // prefer flash; if 404, resolve a usable model (same pattern as summarizeTabs)
+  let model = "models/gemini-1.5-flash-latest";
+  try {
+    return await postGenerateContent(model, prompt);
+  } catch (e) {
+    const is404 =
+      e instanceof Error &&
+      /(^|[\s{"])404([\s}",]|$)/.test(e.message) &&
+      /NOT_FOUND|is not found|not supported/.test(e.message);
+    if (!is404) throw e;
+    model = await resolveUsableModel();
+    return await postGenerateContent(model, prompt);
+  }
+}

@@ -1,6 +1,9 @@
+// src/sidebar/Sidebar.tsx
 import { useEffect, useMemo, useState, useCallback } from "react";
 import { SummaryModal } from "../components/SummaryModal";
+import { stripCodeFences, toRenderableGroups } from "../lib/autoGroupHelpers";
 
+/* ------------------ Small UI bits ------------------ */
 function Spinner({ className = "h-4 w-4" }: { className?: string }) {
   return (
     <svg
@@ -26,6 +29,7 @@ function Spinner({ className = "h-4 w-4" }: { className?: string }) {
   );
 }
 
+/* ------------------ Types ------------------ */
 type TabInfo = { id: number; title: string; url: string; favIconUrl?: string };
 type SavedTab = {
   id: string;
@@ -33,9 +37,35 @@ type SavedTab = {
   url: string;
   favIconUrl?: string;
   savedAt: number;
-  group?: string; // ← used for manual grouping
+  group?: string;
 };
 
+type SuggestedItem = {
+  id: string;
+  title: string;
+  favIconUrl?: string;
+  url?: string;
+};
+
+/* ------------------ Helpers ------------------ */
+// Prefer given favicon, else site /favicon.ico, else extension logo
+function faviconFor(
+  inExtension: boolean,
+  url?: string,
+  favIconUrl?: string
+): string | undefined {
+  if (favIconUrl) return favIconUrl;
+  try {
+    if (url) return new URL("/favicon.ico", new URL(url).origin).href;
+  } catch {
+    // intentionally ignored – bad URL, fall through to extension logo
+  }
+  return inExtension ? chrome.runtime.getURL("icons/Logo.png") : undefined;
+}
+
+/* =======================================================
+   Sidebar
+======================================================= */
 export default function Sidebar() {
   const [tabs, setTabs] = useState<TabInfo[]>([]);
   const [saved, setSaved] = useState<SavedTab[]>([]);
@@ -44,80 +74,33 @@ export default function Sidebar() {
 
   const [recapLoading, setRecapLoading] = useState(false);
   const [autoGroupLoading, setAutoGroupLoading] = useState(false);
-  // track which group is being summarized; null = none
   const [groupSummarizing, setGroupSummarizing] = useState<string | null>(null);
 
-  // NEW: group picker state (open when saving/moving)
   const [showPicker, setShowPicker] = useState<null | {
     mode: "save" | "move";
     tab: TabInfo | SavedTab;
   }>(null);
-
-  // NEW: collapsible sections & derived data
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
+
+  const inExtension = useMemo(
+    () => typeof chrome !== "undefined" && !!chrome.runtime?.id,
+    []
+  );
+
+  /* -------- Saved groups list (for pickers & editing) -------- */
   const groups = useMemo(() => {
     const set = new Set<string>();
     for (const s of saved) if (s.group) set.add(s.group);
     return Array.from(set).sort((a, b) => a.localeCompare(b));
   }, [saved]);
 
-  const [query] = useState("");
-  const [sortBy] = useState<"recent" | "title" | "site">("recent");
-
-  // 1) filter + sort flat list
+  /* -------- Sorting / Grouping for Saved -------- */
   const visibleSaved = useMemo(() => {
-    let list = [...saved];
-
-    // filter
-    if (query.trim()) {
-      const q = query.toLowerCase();
-      list = list.filter((s) => {
-        const host = (() => {
-          try {
-            return new URL(s.url).hostname;
-          } catch {
-            return "";
-          }
-        })();
-        return (
-          (s.title || "").toLowerCase().includes(q) ||
-          host.toLowerCase().includes(q)
-        );
-      });
-    }
-
-    // sort
-    switch (sortBy) {
-      case "title":
-        list.sort((a, b) => (a.title || "").localeCompare(b.title || ""));
-        break;
-      case "site":
-        list.sort((a, b) => {
-          const ah = (() => {
-            try {
-              return new URL(a.url).hostname;
-            } catch {
-              return "";
-            }
-          })();
-          const bh = (() => {
-            try {
-              return new URL(b.url).hostname;
-            } catch {
-              return "";
-            }
-          })();
-          return ah.localeCompare(bh);
-        });
-        break;
-      default: // "recent"
-        list.sort((a, b) => b.savedAt - a.savedAt);
-    }
-
+    const list = [...saved];
+    list.sort((a, b) => b.savedAt - a.savedAt);
     return list;
-  }, [saved, query, sortBy]);
+  }, [saved]);
 
-  // 2) group the already-filtered list
   const groupedSaved = useMemo(() => {
     const m = new Map<string, SavedTab[]>();
     for (const s of visibleSaved) {
@@ -128,11 +111,7 @@ export default function Sidebar() {
     return Array.from(m.entries()).sort(([a], [b]) => a.localeCompare(b));
   }, [visibleSaved]);
 
-  const inExtension = useMemo(
-    () => typeof chrome !== "undefined" && !!chrome.runtime?.id,
-    []
-  );
-
+  /* ------------------ Loaders ------------------ */
   const loadTabs = useCallback(async () => {
     if (!inExtension) return;
     setLoading(true);
@@ -152,7 +131,134 @@ export default function Sidebar() {
     loadSaved();
   }, [loadTabs, loadSaved]);
 
-  // saving now opens the group picker instead of saving immediately
+  /* ------------------ Suggested (Auto-Group preview for All) ------------------ */
+  const [suggested, setSuggested] = useState<Record<string, SuggestedItem[]>>(
+    {}
+  );
+  const [selectedSuggestedGroups, setSelectedSuggestedGroups] = useState<
+    Set<string>
+  >(new Set());
+  const hasSuggestions = Object.keys(suggested).length > 0;
+
+  // Restore preview state on mount
+  useEffect(() => {
+    if (!inExtension) return;
+    chrome.storage.local
+      .get(["tw_suggested", "tw_suggested_selected"])
+      .then((obj) => {
+        if (obj?.tw_suggested && typeof obj.tw_suggested === "object") {
+          setSuggested(obj.tw_suggested as Record<string, SuggestedItem[]>);
+        }
+        if (Array.isArray(obj?.tw_suggested_selected)) {
+          setSelectedSuggestedGroups(
+            new Set(obj.tw_suggested_selected as string[])
+          );
+        }
+      });
+  }, [inExtension]);
+
+  // Persist preview state
+  useEffect(() => {
+    if (!inExtension) return;
+    chrome.storage.local.set({
+      tw_suggested: suggested,
+      tw_suggested_selected: Array.from(selectedSuggestedGroups),
+    });
+  }, [inExtension, suggested, selectedSuggestedGroups]);
+
+  /* ------------------ Live tab updates ------------------ */
+  useEffect(() => {
+    if (!inExtension) return;
+
+    const onCreated = (tab: chrome.tabs.Tab) => {
+      setTabs((prev) => {
+        const next = [...prev];
+        if (typeof tab?.id === "number" && !next.some((t) => t.id === tab.id)) {
+          next.push({
+            id: tab.id as number,
+            title: tab.title || "(No title)",
+            url: tab.url ?? "",
+            favIconUrl: tab.favIconUrl,
+          });
+        }
+        return next;
+      });
+
+      if (hasSuggestions && typeof tab?.id === "number") {
+        setSuggested((prev) => {
+          const next = { ...prev };
+          const arr = next["Ungrouped"] ? [...next["Ungrouped"]] : [];
+          arr.push({
+            id: String(tab.id),
+            title: tab.title || "(No title)",
+            favIconUrl: tab.favIconUrl,
+            url: tab.url ?? "",
+          });
+          next["Ungrouped"] = arr;
+          return next;
+        });
+      }
+    };
+
+    const onRemoved = (tabId: number) => {
+      setTabs((prev) => prev.filter((t) => t.id !== tabId));
+      if (hasSuggestions) {
+        setSuggested((prev) => {
+          const next: Record<string, SuggestedItem[]> = {};
+          for (const [g, items] of Object.entries(prev)) {
+            const kept = items.filter((i) => i.id !== String(tabId));
+            if (kept.length > 0) next[g] = kept;
+          }
+          return next;
+        });
+      }
+    };
+
+    type MinimalChangeInfo = {
+      status?: string;
+      title?: string;
+      favIconUrl?: string;
+      url?: string;
+    };
+
+    const onUpdated = (
+      tabId: number,
+      changeInfo: MinimalChangeInfo,
+      tab: chrome.tabs.Tab
+    ) => {
+      if (
+        changeInfo?.status === "complete" ||
+        changeInfo?.title ||
+        changeInfo?.favIconUrl ||
+        changeInfo?.url
+      ) {
+        setTabs((prev) =>
+          prev.map((t) =>
+            t.id === tabId
+              ? {
+                  ...t,
+                  title: tab?.title ?? t.title,
+                  url: tab.url ?? t.url,
+                  favIconUrl: tab?.favIconUrl ?? t.favIconUrl,
+                }
+              : t
+          )
+        );
+      }
+    };
+
+    chrome.tabs.onCreated.addListener(onCreated);
+    chrome.tabs.onRemoved.addListener(onRemoved);
+    chrome.tabs.onUpdated.addListener(onUpdated);
+
+    return () => {
+      chrome.tabs.onCreated.removeListener(onCreated);
+      chrome.tabs.onRemoved.removeListener(onRemoved);
+      chrome.tabs.onUpdated.removeListener(onUpdated);
+    };
+  }, [inExtension, hasSuggestions]);
+
+  /* ------------------ Actions ------------------ */
   function startSave(t: TabInfo) {
     setShowPicker({ mode: "save", tab: t });
   }
@@ -162,10 +268,10 @@ export default function Sidebar() {
     await loadSaved();
   }
 
-  const [menuFor, setMenuFor] = useState<string | null>(null); // which group has its menu open
-  const [renaming, setRenaming] = useState<string | null>(null); // which group is in rename mode
-  const [renameValue, setRenameValue] = useState(""); // text for rename
-  const [confirmDelete, setConfirmDelete] = useState<string | null>(null); // which group is confirming delete
+  const [menuFor, setMenuFor] = useState<string | null>(null);
+  const [renaming, setRenaming] = useState<string | null>(null);
+  const [renameValue, setRenameValue] = useState("");
+  const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
 
   async function doRenameGroup(from: string, to: string) {
     if (!to.trim() || from === to) {
@@ -192,21 +298,18 @@ export default function Sidebar() {
     await loadSaved();
   }
 
+  /* ------------------ Select mode (All) ------------------ */
   const [selecting, setSelecting] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
 
   function toggleOne(id: number) {
     setSelectedIds((prev) => {
       const next = new Set(prev);
-      if (next.has(id)) {
-        next.delete(id);
-      } else {
-        next.add(id);
-      }
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
       return next;
     });
   }
-
   function selectAllVisible() {
     setSelectedIds(new Set(tabs.map((t) => t.id)));
   }
@@ -215,15 +318,17 @@ export default function Sidebar() {
     setSelecting(false);
   }
 
+  /* ------------------ AI recap modal ------------------ */
   const [summaryOpen, setSummaryOpen] = useState(false);
   const [summaryText, setSummaryText] = useState("");
 
+  /* ------------------ Auto-group (Saved) ------------------ */
   async function autoGroupSaved() {
     setAutoGroupLoading(true);
     try {
       const res = await chrome.runtime.sendMessage({
         type: "AUTO_GROUP_TABS",
-        tabs: saved.map((s) => ({ title: s.title, url: s.url })),
+        tabs: saved.map((s) => ({ id: s.id, title: s.title })),
       });
 
       if (!res?.ok || !res.groups) {
@@ -232,55 +337,149 @@ export default function Sidebar() {
         return;
       }
 
+      let jsonText = String(res.groups).trim();
+      if (jsonText.startsWith("```")) {
+        const first = jsonText.indexOf("{");
+        const last = jsonText.lastIndexOf("}");
+        if (first !== -1 && last !== -1 && last > first) {
+          jsonText = jsonText.slice(first, last + 1);
+        }
+      }
+
+      let mapping: Record<string, string[]>;
       try {
-        // { "Group A": ["Title 1","Title 2"], "Group B": [...] }
-        const mapping = JSON.parse(res.groups) as Record<string, string[]>;
-        const titleToGroup = new Map<string, string>();
-        Object.entries(mapping).forEach(([group, titles]) => {
-          titles.forEach((t) => titleToGroup.set(t.toLowerCase(), group));
-        });
-
-        await Promise.all(
-          saved.map((s) => {
-            const newGroup = titleToGroup.get((s.title || "").toLowerCase());
-            if (newGroup && s.group !== newGroup) {
-              return chrome.runtime.sendMessage({
-                type: "UPDATE_SAVED_TAB",
-                id: s.id,
-                patch: { group: newGroup },
-              });
-            }
-            return Promise.resolve();
-          })
-        );
-
-        await loadSaved();
+        mapping = JSON.parse(jsonText);
       } catch (e) {
         setSummaryText(
-          "Auto-group: AI response wasn’t valid JSON.\n\n" + String(e)
+          "Auto-group: AI response wasn’t valid JSON.\n\n" +
+            String(e) +
+            "\n\n" +
+            jsonText
         );
         setSummaryOpen(true);
+        return;
       }
+
+      const apply = await chrome.runtime.sendMessage({
+        type: "APPLY_GROUPS",
+        payload: mapping,
+      });
+      if (!apply?.ok) {
+        setSummaryText(
+          "Failed to apply groups: " + (apply?.error ?? "Unknown")
+        );
+        setSummaryOpen(true);
+        return;
+      }
+
+      await loadSaved();
     } finally {
       setAutoGroupLoading(false);
     }
   }
 
+  /* ------------------ Auto-group (All) → preview ------------------ */
+  const [isGrouping, setIsGrouping] = useState(false);
+
+  async function runAutoGroupOnAll() {
+    setIsGrouping(true);
+    try {
+      const res = await chrome.runtime.sendMessage({
+        type: "AUTO_GROUP_OPEN_TABS",
+      });
+      if (!res?.ok) {
+        console.warn("Auto-Group failed:", res?.error);
+        return;
+      }
+      const jsonText = stripCodeFences(String(res.groups));
+
+      let groups: Record<string, { id: string; title: string }[]>;
+      try {
+        groups = toRenderableGroups(jsonText, res.tabs ?? []);
+      } catch (e) {
+        console.warn("AI returned invalid JSON", e, jsonText);
+        return;
+      }
+
+      const tabsArray: Array<{
+        id: number;
+        title: string;
+        url?: string;
+        favIconUrl?: string;
+      }> = Array.isArray(res.tabs) ? res.tabs : [];
+      const byId = new Map<string, { url?: string; favIconUrl?: string }>();
+      for (const t of tabsArray) {
+        byId.set(String(t.id), { url: t.url, favIconUrl: t.favIconUrl });
+      }
+
+      const enriched: Record<string, SuggestedItem[]> = {};
+      for (const [g, items] of Object.entries(groups)) {
+        enriched[g] = items.map((i) => {
+          const extra = byId.get(i.id) ?? {};
+          return {
+            id: i.id,
+            title: i.title,
+            favIconUrl: extra.favIconUrl,
+            url: extra.url,
+          };
+        });
+      }
+
+      setSuggested(enriched);
+      setSelectedSuggestedGroups(new Set()); // user picks what to save
+    } finally {
+      setIsGrouping(false);
+    }
+  }
+
+  function toggleSuggestedPick(name: string) {
+    setSelectedSuggestedGroups((prev) => {
+      const next = new Set(prev);
+      if (next.has(name)) next.delete(name);
+      else next.add(name);
+      return next;
+    });
+  }
+
+  async function saveSelectedGroups() {
+    const payload: Record<string, string[]> = {};
+    for (const [g, items] of Object.entries(suggested)) {
+      if (!selectedSuggestedGroups.has(g)) continue;
+      payload[g] = items.map((i) => i.id);
+    }
+    const res = await chrome.runtime.sendMessage({
+      type: "SAVE_OPEN_GROUPS",
+      payload,
+    });
+    if (!res?.ok) {
+      console.warn("Save failed:", res?.error);
+      return;
+    }
+    setSuggested({});
+    setSelectedSuggestedGroups(new Set());
+    setView("saved");
+    await loadSaved();
+  }
+
+  function clearSuggestions() {
+    setSuggested({});
+    setSelectedSuggestedGroups(new Set());
+  }
+
+  /* ------------------ UI ------------------ */
   return (
-    <div
-      className="min-h-full text-foreground
-    bg-white/40 dark:bg-neutral-900/50
-    backdrop-blur-lg
-    border-l border-white/20 dark:border-white/10"
-    >
+    <div className="min-h-full text-foreground bg-white/40 dark:bg-neutral-900/50 backdrop-blur-lg border-l border-white/20 dark:border-white/10">
       <header className="sticky top-0 z-20 bg-background/80 backdrop-blur border-b px-3 py-2 flex flex-col gap-2">
-        {/* Row 1: wordmark + buttons */}
+        {/* Row 1: title + actions */}
         <div className="flex items-center justify-between">
-          {/* Wordmark with logo chip + accent underline */}
           <div className="relative">
             <div className="flex items-center gap-2">
               <img
-                src={chrome.runtime.getURL("icons/Logo.png")}
+                src={
+                  inExtension
+                    ? chrome.runtime.getURL("icons/Logo.png")
+                    : undefined
+                }
                 alt=""
                 className="h-5 w-5 rounded-sm shadow-sm"
               />
@@ -291,7 +490,6 @@ export default function Sidebar() {
             <div className="absolute left-7 right-0 -bottom-1 h-[2px] rounded-full bg-gradient-to-r from-primary/70 via-primary to-primary/40" />
           </div>
 
-          {/* Matched circular icon buttons */}
           <div className="flex items-center gap-1">
             <button
               aria-label="Refresh"
@@ -299,7 +497,6 @@ export default function Sidebar() {
               onClick={loadTabs}
               className="h-7 w-7 rounded-full border bg-background shadow-sm hover:bg-accent hover:shadow transition flex items-center justify-center"
             >
-              {/* Refresh icon */}
               <svg
                 xmlns="http://www.w3.org/2000/svg"
                 className="w-4 h-4"
@@ -329,7 +526,7 @@ export default function Sidebar() {
           </div>
         </div>
 
-        {/* Row 2: 50/50 All/Saved */}
+        {/* Row 2: view switch */}
         <div className="grid grid-cols-2 gap-2">
           <button
             className={`h-8 rounded-md border text-xs w-full ${
@@ -357,8 +554,8 @@ export default function Sidebar() {
           </button>
         </div>
 
-        {/* Row 3: action buttons */}
-        <div className="grid grid-cols-3 gap-2">
+        {/* Row 3: toolbar (Lovable-style) */}
+        <div className="flex flex-wrap items-center gap-2">
           <button
             className="h-8 px-3 rounded-md border text-xs flex items-center justify-center gap-2 disabled:opacity-50 hover:bg-accent"
             disabled={recapLoading}
@@ -391,111 +588,248 @@ export default function Sidebar() {
             <span>Recap</span>
           </button>
 
-          <button
-            className="h-8 px-3 rounded-md border text-xs flex items-center justify-center gap-2 disabled:opacity-50 hover:bg-accent"
-            disabled={autoGroupLoading}
-            onClick={autoGroupSaved}
-            title="Let AI group your saved tabs by topic"
-          >
-            {autoGroupLoading ? <Spinner className="h-3.5 w-3.5" /> : null}
-            <span>Auto-Group</span>
-          </button>
-
-          {view === "all" && !selecting ? (
-            <button
-              className="h-8 px-3 rounded-md border text-xs hover:bg-accent"
-              onClick={() => setSelecting(true)}
-              title="Select multiple tabs to save"
-            >
-              Select
-            </button>
-          ) : (
-            <button
-              className="h-8 px-3 rounded-md border text-xs hover:bg-accent"
-              onClick={() => setSelecting(false)}
-            >
-              Done
-            </button>
-          )}
-
-          {/* Selection actions */}
-          {view === "all" && selecting && (
+          {view === "all" ? (
             <>
-              <span className="text-xs opacity-70">
-                {selectedIds.size} selected
-              </span>
+              {!selecting && (
+                <>
+                  <button
+                    className="h-8 px-3 rounded-md border text-xs flex items-center justify-center gap-2 disabled:opacity-50 hover:bg-accent"
+                    disabled={isGrouping}
+                    onClick={runAutoGroupOnAll}
+                    title="Let AI propose topic groups for your open tabs"
+                  >
+                    {isGrouping ? <Spinner className="h-3.5 w-3.5" /> : null}
+                    <span>Auto-Group</span>
+                  </button>
+
+                  {hasSuggestions && (
+                    <>
+                      <button
+                        className="h-8 px-3 rounded-md bg-black text-white text-xs hover:opacity-90 disabled:opacity-50"
+                        onClick={saveSelectedGroups}
+                        title="Save the selected suggested groups to Saved"
+                        disabled={selectedSuggestedGroups.size === 0}
+                      >
+                        Save Selected
+                      </button>
+                      <button
+                        className="h-8 px-3 rounded-md border text-xs hover:bg-accent"
+                        onClick={clearSuggestions}
+                      >
+                        Clear
+                      </button>
+                    </>
+                  )}
+
+                  <button
+                    className="h-8 px-3 rounded-md border text-xs hover:bg-accent"
+                    onClick={() => setSelecting(true)}
+                    title="Select multiple tabs to save"
+                  >
+                    Select
+                  </button>
+                </>
+              )}
+
+              {selecting && (
+                <>
+                  <button
+                    className="h-8 px-3 rounded-md border text-xs hover:bg-accent"
+                    onClick={() => setSelecting(false)}
+                  >
+                    Done
+                  </button>
+
+                  <span className="text-xs opacity-70">
+                    {selectedIds.size} selected
+                  </span>
+
+                  <button
+                    className="h-8 px-3 rounded-md border text-xs hover:bg-accent"
+                    onClick={selectAllVisible}
+                  >
+                    Select all
+                  </button>
+
+                  <button
+                    className="h-8 px-3 rounded-md border bg-primary text-primary-foreground text-xs disabled:opacity-50"
+                    disabled={selectedIds.size === 0}
+                    onClick={() =>
+                      setShowPicker({
+                        mode: "save",
+                        tab: { id: -1, title: "", url: "" } as TabInfo,
+                      })
+                    }
+                  >
+                    Save ({selectedIds.size})
+                  </button>
+
+                  <button
+                    className="h-8 px-3 rounded-md border text-xs hover:bg-accent"
+                    onClick={clearSelection}
+                  >
+                    Cancel
+                  </button>
+                </>
+              )}
+            </>
+          ) : (
+            <>
               <button
-                className="h-7 px-3 rounded-md border"
-                onClick={selectAllVisible}
+                className="h-8 px-3 rounded-md border text-xs flex items-center justify-center gap-2 disabled:opacity-50 hover:bg-accent"
+                disabled={autoGroupLoading}
+                onClick={autoGroupSaved}
+                title="Let AI group your saved tabs by topic"
               >
-                Select all
+                {autoGroupLoading ? <Spinner className="h-3.5 w-3.5" /> : null}
+                <span>Auto-Group</span>
               </button>
-              <button
-                className="h-7 px-3 rounded-md border bg-primary text-primary-foreground disabled:opacity-50"
-                disabled={selectedIds.size === 0}
-                onClick={() => {
-                  setShowPicker({
-                    mode: "save",
-                    tab: { id: -1, title: "", url: "" } as TabInfo,
-                  });
-                }}
-              >
-                Save ({selectedIds.size})
-              </button>
-              <button
-                className="h-7 px-3 rounded-md border"
-                onClick={clearSelection}
-              >
-                Cancel
-              </button>
+
+              {!selecting ? (
+                <button
+                  className="h-8 px-3 rounded-md border text-xs hover:bg-accent"
+                  onClick={() => setSelecting(true)}
+                >
+                  Select
+                </button>
+              ) : (
+                <button
+                  className="h-8 px-3 rounded-md border text-xs hover:bg-accent"
+                  onClick={() => setSelecting(false)}
+                >
+                  Done
+                </button>
+              )}
             </>
           )}
         </div>
       </header>
 
-      {/* Watermark logo background */}
-      <div
-        aria-hidden
-        className="pointer-events-none fixed z-0 inset-0 flex items-center justify-center opacity-10"
-        style={{
-          backgroundImage: `url(${chrome.runtime.getURL("icons/Logo.png")})`,
-          backgroundRepeat: "no-repeat",
-          backgroundPosition: "center",
-          backgroundSize: "220px", // tweak size here
-        }}
-      />
+      {/* Watermark */}
+      {inExtension ? (
+        <div
+          aria-hidden
+          className="pointer-events-none fixed z-0 inset-0 flex items-center justify-center opacity-10"
+          style={{
+            backgroundImage: `url(${chrome.runtime.getURL("icons/Logo.png")})`,
+            backgroundRepeat: "no-repeat",
+            backgroundPosition: "center",
+            backgroundSize: "220px",
+          }}
+        />
+      ) : null}
 
       <main className="relative z-10 p-3 space-y-3">
-        {view === "all" && (
+        {/* Suggested groups preview (after Auto-Group on All) */}
+        {hasSuggestions ? (
+          <div className="space-y-4">
+            {Object.entries(suggested).map(([group, items]) => (
+              <div
+                key={group}
+                className="rounded-xl border bg-white/60 dark:bg-neutral-900/40"
+              >
+                <div className="px-3 py-2 flex items-center gap-2">
+                  <label className="flex items-center gap-2 font-semibold">
+                    <input
+                      type="checkbox"
+                      checked={selectedSuggestedGroups.has(group)}
+                      onChange={() => toggleSuggestedPick(group)}
+                    />
+                    <span>{group}</span>
+                    <span className="text-sm opacity-60">({items.length})</span>
+                  </label>
+                </div>
+                <ul className="px-3 pb-3 space-y-2">
+                  {items.map((i) => (
+                    <li
+                      key={i.id}
+                      className="p-2 rounded-lg border bg-card shadow-sm flex items-center gap-3"
+                    >
+                      <img
+                        src={faviconFor(inExtension, i.url, i.favIconUrl)}
+                        className="w-5 h-5 rounded-sm"
+                        onError={(e) => {
+                          (e.currentTarget as HTMLImageElement).style.display =
+                            "none";
+                        }}
+                      />
+                      <div className="min-w-0">
+                        <div className="text-sm font-medium truncate">
+                          {i.title}
+                        </div>
+                        {i.url ? (
+                          <div className="text-[11px] opacity-60 truncate">
+                            {i.url}
+                          </div>
+                        ) : null}
+                      </div>
+                      <div className="ml-auto flex gap-2">
+                        <button
+                          className="text-xs px-2 py-1 rounded border"
+                          onClick={() =>
+                            chrome.tabs.update(Number(i.id), { active: true })
+                          }
+                        >
+                          Open
+                        </button>
+                        {/* IMPORTANT: do not persist; open picker first */}
+                        <button
+                          className="text-xs px-2 py-1 rounded border"
+                          onClick={() => {
+                            setShowPicker({
+                              mode: "save",
+                              tab: {
+                                id: -1,
+                                title: i.title || "(No title)",
+                                url: i.url || "",
+                                favIconUrl: i.favIconUrl,
+                              } as TabInfo,
+                            });
+                          }}
+                        >
+                          Save
+                        </button>
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ))}
+          </div>
+        ) : null}
+
+        {/* ALL view list (hidden when suggestions exist) */}
+        {view === "all" && !hasSuggestions ? (
           <>
-            {loading && <div className="text-sm opacity-70">Loading…</div>}
-            {!loading && tabs.length === 0 && (
+            {loading ? (
+              <div className="text-sm opacity-70">Loading…</div>
+            ) : null}
+            {!loading && tabs.length === 0 ? (
               <div className="text-sm opacity-70">No tabs.</div>
-            )}
+            ) : null}
+
             <ul className="space-y-2">
               {tabs.map((t) => (
                 <li
                   key={t.id}
                   className="p-2 rounded-lg border bg-card shadow-sm flex items-center gap-3"
                 >
-                  {selecting && (
+                  {selecting ? (
                     <input
                       type="checkbox"
                       className="h-4 w-4"
                       checked={selectedIds.has(t.id)}
                       onChange={() => toggleOne(t.id)}
                     />
-                  )}
+                  ) : null}
 
                   <img
-                    src={
-                      t.favIconUrl || chrome.runtime.getURL("icons/Logo.png")
-                    }
+                    src={faviconFor(inExtension, t.url, t.favIconUrl)}
                     className="w-5 h-5 rounded-sm"
-                    onError={(e) =>
-                      ((e.currentTarget as HTMLImageElement).style.display =
-                        "none")
-                    }
+                    onError={(e) => {
+                      (e.currentTarget as HTMLImageElement).style.display =
+                        "none";
+                    }}
                   />
                   <div className="min-w-0">
                     <div className="text-sm font-medium truncate">
@@ -505,38 +839,44 @@ export default function Sidebar() {
                       {t.url}
                     </div>
                   </div>
+
                   <div className="ml-auto flex gap-2">
-                    <button
-                      className="text-xs px-2 py-1 rounded border"
-                      onClick={() => chrome.tabs.update(t.id, { active: true })}
-                    >
-                      Open
-                    </button>
-                    <button
-                      className="text-xs px-2 py-1 rounded border"
-                      onClick={() => startSave(t)} // ← open group picker
-                    >
-                      Save
-                    </button>
+                    {!selecting ? (
+                      <>
+                        <button
+                          className="text-xs px-2 py-1 rounded border"
+                          onClick={() =>
+                            chrome.tabs.update(Number(t.id), { active: true })
+                          }
+                        >
+                          Open
+                        </button>
+                        <button
+                          className="text-xs px-2 py-1 rounded border"
+                          onClick={() => startSave(t)}
+                        >
+                          Save
+                        </button>
+                      </>
+                    ) : null}
                   </div>
                 </li>
               ))}
             </ul>
           </>
-        )}
+        ) : null}
 
-        {view === "saved" && (
+        {/* SAVED view */}
+        {view === "saved" ? (
           <>
-            {groupedSaved.length === 0 && (
+            {groupedSaved.length === 0 ? (
               <div className="text-sm opacity-70">Nothing saved yet.</div>
-            )}
+            ) : null}
 
             <div className="space-y-4">
               {groupedSaved.map(([groupName, items]) => (
                 <section key={groupName} className="border rounded-lg">
-                  {/* header with menu/rename */}
                   <div className="sticky top-12 bg-background/80 backdrop-blur z-10 px-1 py-1 flex items-center gap-2 border-b">
-                    {/* name or rename input */}
                     {renaming === groupName ? (
                       <div className="flex items-center gap-2">
                         <input
@@ -585,7 +925,7 @@ export default function Sidebar() {
                       </button>
                     )}
 
-                    {/* AI summarize this group */}
+                    {/* Summarize this saved group */}
                     <button
                       className="text-xs px-2 py-1 rounded border ml-2 flex items-center gap-2 disabled:opacity-50"
                       disabled={groupSummarizing === groupName}
@@ -599,13 +939,11 @@ export default function Sidebar() {
                           const userPrompt =
                             prompt("Optional: Add extra instruction for AI") ||
                             "";
-
                           const res = await chrome.runtime.sendMessage({
                             type: "SUMMARIZE_TABS",
                             tabs: groupTabs,
                             prompt: userPrompt,
                           });
-
                           if (res?.ok) {
                             setSummaryText(res.summary);
                             setSummaryOpen(true);
@@ -626,7 +964,7 @@ export default function Sidebar() {
                       <span>Summarize</span>
                     </button>
 
-                    {/* kebab menu */}
+                    {/* Kebab menu */}
                     <div className="ml-auto relative">
                       <button
                         className="h-7 w-7 rounded border flex items-center justify-center"
@@ -638,10 +976,9 @@ export default function Sidebar() {
                         ⋯
                       </button>
 
-                      {menuFor === groupName && (
+                      {menuFor === groupName ? (
                         <div className="absolute right-0 mt-1 w-44 rounded-md border bg-background shadow-lg z-20">
-                          {/* Only show Rename if not Ungrouped */}
-                          {groupName !== "Ungrouped" && (
+                          {groupName !== "Ungrouped" ? (
                             <button
                               className="w-full text-left px-3 py-2 text-sm hover:bg-muted"
                               onClick={() => {
@@ -652,7 +989,7 @@ export default function Sidebar() {
                             >
                               Rename
                             </button>
-                          )}
+                          ) : null}
 
                           <button
                             className="w-full text-left px-3 py-2 text-sm hover:bg-muted"
@@ -661,11 +998,11 @@ export default function Sidebar() {
                             Delete…
                           </button>
                         </div>
-                      )}
+                      ) : null}
                     </div>
                   </div>
 
-                  {!collapsed[groupName] && (
+                  {!collapsed[groupName] ? (
                     <ul className="p-3 pt-0 space-y-2">
                       {items.map((s) => (
                         <li
@@ -673,16 +1010,13 @@ export default function Sidebar() {
                           className="p-2 rounded-lg border bg-card shadow-sm flex items-center gap-3"
                         >
                           <img
-                            src={
-                              s.favIconUrl ||
-                              chrome.runtime.getURL("icons/Logo.png")
-                            }
+                            src={faviconFor(inExtension, s.url, s.favIconUrl)}
                             className="w-5 h-5 rounded-sm"
-                            onError={(e) =>
-                              ((
+                            onError={(e) => {
+                              (
                                 e.currentTarget as HTMLImageElement
-                              ).style.display = "none")
-                            }
+                              ).style.display = "none";
+                            }}
                           />
                           <div className="min-w-0">
                             <div className="text-sm font-medium truncate">
@@ -717,16 +1051,16 @@ export default function Sidebar() {
                         </li>
                       ))}
                     </ul>
-                  )}
+                  ) : null}
                 </section>
               ))}
             </div>
           </>
-        )}
+        ) : null}
       </main>
 
-      {/* NEW: Group Picker modal */}
-      {showPicker && (
+      {/* Group Picker (save to Ungrouped / existing / new) */}
+      {showPicker ? (
         <GroupPicker
           existing={groups}
           initial={
@@ -736,18 +1070,16 @@ export default function Sidebar() {
           }
           onCancel={() => setShowPicker(null)}
           onSubmit={async (groupName) => {
-            // Are we in bulk-select mode?
+            // Bulk save from All (select mode)
             if (view === "all" && selecting && selectedIds.size > 0) {
-              // Build payloads from selected open tabs
               const chosenTabs = tabs.filter((t) => selectedIds.has(t.id));
+              const now = Date.now();
               const payload = chosenTabs.map<SavedTab>((t) => ({
-                id: `${t.id}-${Date.now()}-${Math.random()
-                  .toString(36)
-                  .slice(2, 7)}`,
+                id: `${t.id}-${now}-${Math.random().toString(36).slice(2, 7)}`,
                 title: t.title || "(No title)",
                 url: t.url,
                 favIconUrl: t.favIconUrl,
-                savedAt: Date.now(),
+                savedAt: now,
                 group: groupName || undefined,
               }));
               const res = await chrome.runtime.sendMessage({
@@ -763,7 +1095,6 @@ export default function Sidebar() {
               return;
             }
 
-            // ----- existing single-save / move logic (unchanged) -----
             if (showPicker.mode === "save") {
               const t = showPicker.tab as TabInfo;
               const payload: SavedTab = {
@@ -789,9 +1120,10 @@ export default function Sidebar() {
             setShowPicker(null);
           }}
         />
-      )}
+      ) : null}
+
       {/* Delete group confirmation */}
-      {confirmDelete && (
+      {confirmDelete ? (
         <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50">
           <div className="bg-background text-foreground rounded-xl shadow-xl border p-5 w-[360px] max-w-[90vw]">
             <div className="font-semibold mb-2 text-lg">Delete group</div>
@@ -800,15 +1132,14 @@ export default function Sidebar() {
             </p>
 
             <div className="flex flex-col gap-2">
-              {/* Only show this option when deleting a real group (NOT Ungrouped) */}
-              {confirmDelete !== "Ungrouped" && (
+              {confirmDelete !== "Ungrouped" ? (
                 <button
                   className="px-3 py-2 border rounded text-left hover:bg-muted"
                   onClick={() => doDeleteGroup(confirmDelete, "ungroup")}
                 >
                   Move items to <strong>Ungrouped</strong>
                 </button>
-              )}
+              ) : null}
 
               <button
                 className="px-3 py-2 border rounded text-left hover:bg-muted"
@@ -828,7 +1159,8 @@ export default function Sidebar() {
             </div>
           </div>
         </div>
-      )}
+      ) : null}
+
       {/* AI Summary modal */}
       <SummaryModal
         open={summaryOpen}
@@ -840,7 +1172,9 @@ export default function Sidebar() {
   );
 }
 
-/* ---------- Tiny GroupPicker component ---------- */
+/* =======================================================
+   GroupPicker
+======================================================= */
 function GroupPicker({
   existing,
   initial,
@@ -850,7 +1184,7 @@ function GroupPicker({
   existing: string[];
   initial?: string;
   onCancel: () => void;
-  onSubmit: (value: string | null) => void; // null = no group
+  onSubmit: (value: string | null) => void;
 }) {
   const [mode, setMode] = useState<"none" | "choose" | "new">(
     !initial ? "none" : existing.includes(initial) ? "choose" : "new"
@@ -864,7 +1198,6 @@ function GroupPicker({
         <div className="font-semibold mb-3 text-lg">Choose where to save</div>
 
         <div className="space-y-4">
-          {/* Option 1: Save without group */}
           <label className="flex items-center gap-2 text-sm">
             <input
               type="radio"
@@ -875,7 +1208,6 @@ function GroupPicker({
             <span>Save without group</span>
           </label>
 
-          {/* Option 2: Use existing group */}
           <label className="flex items-center gap-2 text-sm">
             <input
               type="radio"
@@ -893,22 +1225,20 @@ function GroupPicker({
               value={chosen}
               onChange={(e) => setChosen(e.target.value)}
             >
-              {existing.length === 0 && (
+              {existing.length === 0 ? (
                 <option value="">(No groups yet)</option>
-              )}
+              ) : null}
               {existing.map((g) => (
                 <option key={g} value={g}>
                   {g}
                 </option>
               ))}
             </select>
-            {/* Custom dropdown arrow */}
             <span className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-500 pointer-events-none">
               ▼
             </span>
           </div>
 
-          {/* Option 3: Create new group */}
           <label className="flex items-center gap-2 text-sm mt-2">
             <input
               type="radio"
