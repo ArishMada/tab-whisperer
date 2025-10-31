@@ -1,4 +1,3 @@
-// src/sidebar/Sidebar.tsx
 import { useEffect, useMemo, useState, useCallback } from "react";
 import { SummaryModal } from "../components/SummaryModal";
 import { stripCodeFences, toRenderableGroups } from "../lib/autoGroupHelpers";
@@ -48,7 +47,7 @@ type SuggestedItem = {
 };
 
 /* ------------------ Helpers ------------------ */
-// Prefer given favicon, else site /favicon.ico, else extension logo
+// Prefer tab favicon, else site /favicon.ico, else extension logo.
 function faviconFor(
   inExtension: boolean,
   url?: string,
@@ -58,9 +57,21 @@ function faviconFor(
   try {
     if (url) return new URL("/favicon.ico", new URL(url).origin).href;
   } catch {
-    // intentionally ignored – bad URL, fall through to extension logo
+    /* ignore */
   }
   return inExtension ? chrome.runtime.getURL("icons/Logo.png") : undefined;
+}
+
+// onError → swap once to extension logo (don’t hide).
+function onIconError(
+  e: React.SyntheticEvent<HTMLImageElement>,
+  inExt: boolean
+) {
+  const img = e.currentTarget as HTMLImageElement;
+  if (!inExt) return;
+  if (img.dataset.fallback === "1") return; // avoid loop
+  img.dataset.fallback = "1";
+  img.src = chrome.runtime.getURL("icons/Logo.png");
 }
 
 /* =======================================================
@@ -77,8 +88,8 @@ export default function Sidebar() {
   const [groupSummarizing, setGroupSummarizing] = useState<string | null>(null);
 
   const [showPicker, setShowPicker] = useState<null | {
-    mode: "save" | "move";
-    tab: TabInfo | SavedTab;
+    mode: "save" | "move" | "bulk";
+    tab?: TabInfo | SavedTab;
   }>(null);
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
 
@@ -87,14 +98,14 @@ export default function Sidebar() {
     []
   );
 
-  /* -------- Saved groups list (for pickers & editing) -------- */
+  /* -------- Saved groups list -------- */
   const groups = useMemo(() => {
     const set = new Set<string>();
     for (const s of saved) if (s.group) set.add(s.group);
     return Array.from(set).sort((a, b) => a.localeCompare(b));
   }, [saved]);
 
-  /* -------- Sorting / Grouping for Saved -------- */
+  /* -------- Saved sorting & grouping -------- */
   const visibleSaved = useMemo(() => {
     const list = [...saved];
     list.sort((a, b) => b.savedAt - a.savedAt);
@@ -131,7 +142,7 @@ export default function Sidebar() {
     loadSaved();
   }, [loadTabs, loadSaved]);
 
-  /* ------------------ Suggested (Auto-Group preview for All) ------------------ */
+  /* ------------------ Auto-Group preview (All) ------------------ */
   const [suggested, setSuggested] = useState<Record<string, SuggestedItem[]>>(
     {}
   );
@@ -140,7 +151,7 @@ export default function Sidebar() {
   >(new Set());
   const hasSuggestions = Object.keys(suggested).length > 0;
 
-  // Restore preview state on mount
+  // restore preview state
   useEffect(() => {
     if (!inExtension) return;
     chrome.storage.local
@@ -157,7 +168,7 @@ export default function Sidebar() {
       });
   }, [inExtension]);
 
-  // Persist preview state
+  // persist preview state
   useEffect(() => {
     if (!inExtension) return;
     chrome.storage.local.set({
@@ -214,16 +225,14 @@ export default function Sidebar() {
       }
     };
 
-    type MinimalChangeInfo = {
-      status?: string;
-      title?: string;
-      favIconUrl?: string;
-      url?: string;
-    };
-
     const onUpdated = (
       tabId: number,
-      changeInfo: MinimalChangeInfo,
+      changeInfo: Partial<{
+        status: string;
+        title: string;
+        favIconUrl: string;
+        url: string;
+      }>,
       tab: chrome.tabs.Tab
     ) => {
       if (
@@ -250,7 +259,6 @@ export default function Sidebar() {
     chrome.tabs.onCreated.addListener(onCreated);
     chrome.tabs.onRemoved.addListener(onRemoved);
     chrome.tabs.onUpdated.addListener(onUpdated);
-
     return () => {
       chrome.tabs.onCreated.removeListener(onCreated);
       chrome.tabs.onRemoved.removeListener(onRemoved);
@@ -259,10 +267,6 @@ export default function Sidebar() {
   }, [inExtension, hasSuggestions]);
 
   /* ------------------ Actions ------------------ */
-  function startSave(t: TabInfo) {
-    setShowPicker({ mode: "save", tab: t });
-  }
-
   async function removeSaved(id: string) {
     await chrome.runtime.sendMessage({ type: "REMOVE_SAVED_TAB", id });
     await loadSaved();
@@ -298,9 +302,9 @@ export default function Sidebar() {
     await loadSaved();
   }
 
-  /* ------------------ Select mode (All) ------------------ */
-  const [selecting, setSelecting] = useState(false);
+  /* ------------------ Always-on selection (All) ------------------ */
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
+  const allChecked = tabs.length > 0 && selectedIds.size === tabs.length;
 
   function toggleOne(id: number) {
     setSelectedIds((prev) => {
@@ -310,12 +314,13 @@ export default function Sidebar() {
       return next;
     });
   }
-  function selectAllVisible() {
-    setSelectedIds(new Set(tabs.map((t) => t.id)));
+  function toggleAll() {
+    setSelectedIds((prev) =>
+      prev.size === tabs.length ? new Set() : new Set(tabs.map((t) => t.id))
+    );
   }
   function clearSelection() {
     setSelectedIds(new Set());
-    setSelecting(false);
   }
 
   /* ------------------ AI recap modal ------------------ */
@@ -349,13 +354,14 @@ export default function Sidebar() {
       let mapping: Record<string, string[]>;
       try {
         mapping = JSON.parse(jsonText);
-      } catch (e) {
+      } catch (e: unknown) {
         setSummaryText(
           "Auto-group: AI response wasn’t valid JSON.\n\n" +
             String(e) +
             "\n\n" +
             jsonText
         );
+
         setSummaryOpen(true);
         return;
       }
@@ -378,7 +384,7 @@ export default function Sidebar() {
     }
   }
 
-  /* ------------------ Auto-group (All) → preview ------------------ */
+  /* ------------------ Auto-group (All) → preview only ------------------ */
   const [isGrouping, setIsGrouping] = useState(false);
 
   async function runAutoGroupOnAll() {
@@ -387,29 +393,21 @@ export default function Sidebar() {
       const res = await chrome.runtime.sendMessage({
         type: "AUTO_GROUP_OPEN_TABS",
       });
-      if (!res?.ok) {
-        console.warn("Auto-Group failed:", res?.error);
-        return;
-      }
+      if (!res?.ok) return;
+
       const jsonText = stripCodeFences(String(res.groups));
+      const groups: Record<string, { id: string; title: string }[]> =
+        toRenderableGroups(jsonText, res.tabs ?? []);
 
-      let groups: Record<string, { id: string; title: string }[]>;
-      try {
-        groups = toRenderableGroups(jsonText, res.tabs ?? []);
-      } catch (e) {
-        console.warn("AI returned invalid JSON", e, jsonText);
-        return;
-      }
+      type OpenTabLite = { id?: number; url?: string; favIconUrl?: string };
 
-      const tabsArray: Array<{
-        id: number;
-        title: string;
-        url?: string;
-        favIconUrl?: string;
-      }> = Array.isArray(res.tabs) ? res.tabs : [];
+      // enrich with url + favIcon
       const byId = new Map<string, { url?: string; favIconUrl?: string }>();
-      for (const t of tabsArray) {
-        byId.set(String(t.id), { url: t.url, favIconUrl: t.favIconUrl });
+      const rawTabs: OpenTabLite[] = (res.tabs ?? []) as OpenTabLite[];
+      for (const t of rawTabs) {
+        if (t?.id != null) {
+          byId.set(String(t.id), { url: t.url, favIconUrl: t.favIconUrl });
+        }
       }
 
       const enriched: Record<string, SuggestedItem[]> = {};
@@ -425,8 +423,10 @@ export default function Sidebar() {
         });
       }
 
+      // PREVIEW ONLY; nothing is persisted yet.
       setSuggested(enriched);
-      setSelectedSuggestedGroups(new Set()); // user picks what to save
+      setSelectedSuggestedGroups(new Set());
+      setView("all");
     } finally {
       setIsGrouping(false);
     }
@@ -447,14 +447,13 @@ export default function Sidebar() {
       if (!selectedSuggestedGroups.has(g)) continue;
       payload[g] = items.map((i) => i.id);
     }
+    if (Object.keys(payload).length === 0) return;
     const res = await chrome.runtime.sendMessage({
       type: "SAVE_OPEN_GROUPS",
       payload,
     });
-    if (!res?.ok) {
-      console.warn("Save failed:", res?.error);
-      return;
-    }
+    if (!res?.ok) return;
+
     setSuggested({});
     setSelectedSuggestedGroups(new Set());
     setView("saved");
@@ -482,6 +481,7 @@ export default function Sidebar() {
                 }
                 alt=""
                 className="h-5 w-5 rounded-sm shadow-sm"
+                onError={(e) => onIconError(e, inExtension)}
               />
               <span className="text-base font-semibold tracking-tight">
                 Tab Whisperer
@@ -532,11 +532,7 @@ export default function Sidebar() {
             className={`h-8 rounded-md border text-xs w-full ${
               view === "all" ? "bg-secondary" : "hover:bg-accent"
             }`}
-            onClick={() => {
-              setView("all");
-              setSelecting(false);
-              clearSelection();
-            }}
+            onClick={() => setView("all")}
           >
             All
           </button>
@@ -544,17 +540,13 @@ export default function Sidebar() {
             className={`h-8 rounded-md border text-xs w-full ${
               view === "saved" ? "bg-secondary" : "hover:bg-accent"
             }`}
-            onClick={() => {
-              setView("saved");
-              setSelecting(false);
-              clearSelection();
-            }}
+            onClick={() => setView("saved")}
           >
             Saved
           </button>
         </div>
 
-        {/* Row 3: toolbar (Lovable-style) */}
+        {/* Row 3: toolbar — compact like your ref */}
         <div className="flex flex-wrap items-center gap-2">
           <button
             className="h-8 px-3 rounded-md border text-xs flex items-center justify-center gap-2 disabled:opacity-50 hover:bg-accent"
@@ -572,13 +564,12 @@ export default function Sidebar() {
                   prompt:
                     "Give a short recap of all browsing topics without detailed summaries.",
                 });
-                if (res?.ok) {
-                  setSummaryText(res.summary);
-                  setSummaryOpen(true);
-                } else {
-                  setSummaryText(`Error: ${res?.error ?? "Unknown error"}`);
-                  setSummaryOpen(true);
-                }
+                setSummaryText(
+                  res?.ok
+                    ? res.summary
+                    : `Error: ${res?.error ?? "Unknown error"}`
+                );
+                setSummaryOpen(true);
               } finally {
                 setRecapLoading(false);
               }
@@ -588,124 +579,70 @@ export default function Sidebar() {
             <span>Recap</span>
           </button>
 
-          {view === "all" ? (
-            <>
-              {!selecting && (
-                <>
-                  <button
-                    className="h-8 px-3 rounded-md border text-xs flex items-center justify-center gap-2 disabled:opacity-50 hover:bg-accent"
-                    disabled={isGrouping}
-                    onClick={runAutoGroupOnAll}
-                    title="Let AI propose topic groups for your open tabs"
-                  >
-                    {isGrouping ? <Spinner className="h-3.5 w-3.5" /> : null}
-                    <span>Auto-Group</span>
-                  </button>
-
-                  {hasSuggestions && (
-                    <>
-                      <button
-                        className="h-8 px-3 rounded-md bg-black text-white text-xs hover:opacity-90 disabled:opacity-50"
-                        onClick={saveSelectedGroups}
-                        title="Save the selected suggested groups to Saved"
-                        disabled={selectedSuggestedGroups.size === 0}
-                      >
-                        Save Selected
-                      </button>
-                      <button
-                        className="h-8 px-3 rounded-md border text-xs hover:bg-accent"
-                        onClick={clearSuggestions}
-                      >
-                        Clear
-                      </button>
-                    </>
-                  )}
-
-                  <button
-                    className="h-8 px-3 rounded-md border text-xs hover:bg-accent"
-                    onClick={() => setSelecting(true)}
-                    title="Select multiple tabs to save"
-                  >
-                    Select
-                  </button>
-                </>
-              )}
-
-              {selecting && (
-                <>
-                  <button
-                    className="h-8 px-3 rounded-md border text-xs hover:bg-accent"
-                    onClick={() => setSelecting(false)}
-                  >
-                    Done
-                  </button>
-
-                  <span className="text-xs opacity-70">
-                    {selectedIds.size} selected
-                  </span>
-
-                  <button
-                    className="h-8 px-3 rounded-md border text-xs hover:bg-accent"
-                    onClick={selectAllVisible}
-                  >
-                    Select all
-                  </button>
-
-                  <button
-                    className="h-8 px-3 rounded-md border bg-primary text-primary-foreground text-xs disabled:opacity-50"
-                    disabled={selectedIds.size === 0}
-                    onClick={() =>
-                      setShowPicker({
-                        mode: "save",
-                        tab: { id: -1, title: "", url: "" } as TabInfo,
-                      })
-                    }
-                  >
-                    Save ({selectedIds.size})
-                  </button>
-
-                  <button
-                    className="h-8 px-3 rounded-md border text-xs hover:bg-accent"
-                    onClick={clearSelection}
-                  >
-                    Cancel
-                  </button>
-                </>
-              )}
-            </>
-          ) : (
+          {view === "all" && (
             <>
               <button
                 className="h-8 px-3 rounded-md border text-xs flex items-center justify-center gap-2 disabled:opacity-50 hover:bg-accent"
-                disabled={autoGroupLoading}
-                onClick={autoGroupSaved}
-                title="Let AI group your saved tabs by topic"
+                disabled={isGrouping}
+                onClick={runAutoGroupOnAll}
+                title="Let AI propose topic groups for your open tabs"
               >
-                {autoGroupLoading ? <Spinner className="h-3.5 w-3.5" /> : null}
+                {isGrouping ? <Spinner className="h-3.5 w-3.5" /> : null}
                 <span>Auto-Group</span>
               </button>
 
-              {!selecting ? (
-                <button
-                  className="h-8 px-3 rounded-md border text-xs hover:bg-accent"
-                  onClick={() => setSelecting(true)}
-                >
-                  Select
-                </button>
-              ) : (
-                <button
-                  className="h-8 px-3 rounded-md border text-xs hover:bg-accent"
-                  onClick={() => setSelecting(false)}
-                >
-                  Done
-                </button>
+              {hasSuggestions && (
+                <>
+                  <button
+                    className="h-8 px-3 rounded-md bg-black text-white text-xs hover:opacity-90 disabled:opacity-50"
+                    onClick={saveSelectedGroups}
+                    disabled={selectedSuggestedGroups.size === 0}
+                  >
+                    Save Selected
+                  </button>
+                  <button
+                    className="h-8 px-3 rounded-md border text-xs hover:bg-accent"
+                    onClick={clearSuggestions}
+                  >
+                    Clear
+                  </button>
+                </>
               )}
+
+              <button
+                className="h-8 px-3 rounded-md border text-xs bg-primary text-primary-foreground disabled:opacity-50"
+                disabled={selectedIds.size === 0}
+                onClick={() => setShowPicker({ mode: "bulk" })}
+                title="Save the checked items"
+              >
+                Save ({selectedIds.size})
+              </button>
+
+              <button
+                className="h-8 px-3 rounded-md border text-xs hover:bg-accent"
+                onClick={toggleAll}
+                title="Toggle all"
+              >
+                {allChecked ? "Unselect all" : "Select all"}
+              </button>
             </>
+          )}
+
+          {view === "saved" && (
+            <button
+              className="h-8 px-3 rounded-md border text-xs flex items-center justify-center gap-2 disabled:opacity-50 hover:bg-accent"
+              disabled={autoGroupLoading}
+              onClick={autoGroupSaved}
+              title="Let AI group your saved tabs by topic"
+            >
+              {autoGroupLoading ? <Spinner className="h-3.5 w-3.5" /> : null}
+              <span>Auto-Group</span>
+            </button>
           )}
         </div>
       </header>
 
-      {/* Watermark */}
+      {/* watermark */}
       {inExtension ? (
         <div
           aria-hidden
@@ -721,7 +658,7 @@ export default function Sidebar() {
 
       <main className="relative z-10 p-3 space-y-3">
         {/* Suggested groups preview (after Auto-Group on All) */}
-        {hasSuggestions ? (
+        {hasSuggestions && view === "all" && (
           <div className="space-y-4">
             {Object.entries(suggested).map(([group, items]) => (
               <div
@@ -748,10 +685,7 @@ export default function Sidebar() {
                       <img
                         src={faviconFor(inExtension, i.url, i.favIconUrl)}
                         className="w-5 h-5 rounded-sm"
-                        onError={(e) => {
-                          (e.currentTarget as HTMLImageElement).style.display =
-                            "none";
-                        }}
+                        onError={(e) => onIconError(e, inExtension)}
                       />
                       <div className="min-w-0">
                         <div className="text-sm font-medium truncate">
@@ -772,10 +706,9 @@ export default function Sidebar() {
                         >
                           Open
                         </button>
-                        {/* IMPORTANT: do not persist; open picker first */}
                         <button
                           className="text-xs px-2 py-1 rounded border"
-                          onClick={() => {
+                          onClick={() =>
                             setShowPicker({
                               mode: "save",
                               tab: {
@@ -784,8 +717,8 @@ export default function Sidebar() {
                                 url: i.url || "",
                                 favIconUrl: i.favIconUrl,
                               } as TabInfo,
-                            });
-                          }}
+                            })
+                          }
                         >
                           Save
                         </button>
@@ -796,17 +729,15 @@ export default function Sidebar() {
               </div>
             ))}
           </div>
-        ) : null}
+        )}
 
-        {/* ALL view list (hidden when suggestions exist) */}
-        {view === "all" && !hasSuggestions ? (
+        {/* ALL view list */}
+        {view === "all" && !hasSuggestions && (
           <>
-            {loading ? (
-              <div className="text-sm opacity-70">Loading…</div>
-            ) : null}
-            {!loading && tabs.length === 0 ? (
+            {loading && <div className="text-sm opacity-70">Loading…</div>}
+            {!loading && tabs.length === 0 && (
               <div className="text-sm opacity-70">No tabs.</div>
-            ) : null}
+            )}
 
             <ul className="space-y-2">
               {tabs.map((t) => (
@@ -814,22 +745,17 @@ export default function Sidebar() {
                   key={t.id}
                   className="p-2 rounded-lg border bg-card shadow-sm flex items-center gap-3"
                 >
-                  {selecting ? (
-                    <input
-                      type="checkbox"
-                      className="h-4 w-4"
-                      checked={selectedIds.has(t.id)}
-                      onChange={() => toggleOne(t.id)}
-                    />
-                  ) : null}
+                  <input
+                    type="checkbox"
+                    className="h-4 w-4"
+                    checked={selectedIds.has(t.id)}
+                    onChange={() => toggleOne(t.id)}
+                  />
 
                   <img
                     src={faviconFor(inExtension, t.url, t.favIconUrl)}
                     className="w-5 h-5 rounded-sm"
-                    onError={(e) => {
-                      (e.currentTarget as HTMLImageElement).style.display =
-                        "none";
-                    }}
+                    onError={(e) => onIconError(e, inExtension)}
                   />
                   <div className="min-w-0">
                     <div className="text-sm font-medium truncate">
@@ -841,37 +767,33 @@ export default function Sidebar() {
                   </div>
 
                   <div className="ml-auto flex gap-2">
-                    {!selecting ? (
-                      <>
-                        <button
-                          className="text-xs px-2 py-1 rounded border"
-                          onClick={() =>
-                            chrome.tabs.update(Number(t.id), { active: true })
-                          }
-                        >
-                          Open
-                        </button>
-                        <button
-                          className="text-xs px-2 py-1 rounded border"
-                          onClick={() => startSave(t)}
-                        >
-                          Save
-                        </button>
-                      </>
-                    ) : null}
+                    <button
+                      className="text-xs px-2 py-1 rounded border"
+                      onClick={() =>
+                        chrome.tabs.update(Number(t.id), { active: true })
+                      }
+                    >
+                      Open
+                    </button>
+                    <button
+                      className="text-xs px-2 py-1 rounded border"
+                      onClick={() => setShowPicker({ mode: "save", tab: t })}
+                    >
+                      Save
+                    </button>
                   </div>
                 </li>
               ))}
             </ul>
           </>
-        ) : null}
+        )}
 
         {/* SAVED view */}
-        {view === "saved" ? (
+        {view === "saved" && (
           <>
-            {groupedSaved.length === 0 ? (
+            {groupedSaved.length === 0 && (
               <div className="text-sm opacity-70">Nothing saved yet.</div>
-            ) : null}
+            )}
 
             <div className="space-y-4">
               {groupedSaved.map(([groupName, items]) => (
@@ -925,7 +847,7 @@ export default function Sidebar() {
                       </button>
                     )}
 
-                    {/* Summarize this saved group */}
+                    {/* summarize group */}
                     <button
                       className="text-xs px-2 py-1 rounded border ml-2 flex items-center gap-2 disabled:opacity-50"
                       disabled={groupSummarizing === groupName}
@@ -944,15 +866,12 @@ export default function Sidebar() {
                             tabs: groupTabs,
                             prompt: userPrompt,
                           });
-                          if (res?.ok) {
-                            setSummaryText(res.summary);
-                            setSummaryOpen(true);
-                          } else {
-                            setSummaryText(
-                              `Error: ${res?.error ?? "Unknown error"}`
-                            );
-                            setSummaryOpen(true);
-                          }
+                          setSummaryText(
+                            res?.ok
+                              ? res.summary
+                              : `Error: ${res?.error ?? "Unknown error"}`
+                          );
+                          setSummaryOpen(true);
                         } finally {
                           setGroupSummarizing(null);
                         }
@@ -964,7 +883,7 @@ export default function Sidebar() {
                       <span>Summarize</span>
                     </button>
 
-                    {/* Kebab menu */}
+                    {/* kebab */}
                     <div className="ml-auto relative">
                       <button
                         className="h-7 w-7 rounded border flex items-center justify-center"
@@ -976,9 +895,9 @@ export default function Sidebar() {
                         ⋯
                       </button>
 
-                      {menuFor === groupName ? (
+                      {menuFor === groupName && (
                         <div className="absolute right-0 mt-1 w-44 rounded-md border bg-background shadow-lg z-20">
-                          {groupName !== "Ungrouped" ? (
+                          {groupName !== "Ungrouped" && (
                             <button
                               className="w-full text-left px-3 py-2 text-sm hover:bg-muted"
                               onClick={() => {
@@ -989,7 +908,7 @@ export default function Sidebar() {
                             >
                               Rename
                             </button>
-                          ) : null}
+                          )}
 
                           <button
                             className="w-full text-left px-3 py-2 text-sm hover:bg-muted"
@@ -998,11 +917,11 @@ export default function Sidebar() {
                             Delete…
                           </button>
                         </div>
-                      ) : null}
+                      )}
                     </div>
                   </div>
 
-                  {!collapsed[groupName] ? (
+                  {!collapsed[groupName] && (
                     <ul className="p-3 pt-0 space-y-2">
                       {items.map((s) => (
                         <li
@@ -1012,11 +931,7 @@ export default function Sidebar() {
                           <img
                             src={faviconFor(inExtension, s.url, s.favIconUrl)}
                             className="w-5 h-5 rounded-sm"
-                            onError={(e) => {
-                              (
-                                e.currentTarget as HTMLImageElement
-                              ).style.display = "none";
-                            }}
+                            onError={(e) => onIconError(e, inExtension)}
                           />
                           <div className="min-w-0">
                             <div className="text-sm font-medium truncate">
@@ -1051,27 +966,26 @@ export default function Sidebar() {
                         </li>
                       ))}
                     </ul>
-                  ) : null}
+                  )}
                 </section>
               ))}
             </div>
           </>
-        ) : null}
+        )}
       </main>
 
-      {/* Group Picker (save to Ungrouped / existing / new) */}
-      {showPicker ? (
+      {/* Group Picker */}
+      {showPicker && (
         <GroupPicker
           existing={groups}
           initial={
             showPicker.mode === "move"
-              ? (showPicker.tab as SavedTab).group ?? ""
+              ? (showPicker.tab as SavedTab)?.group ?? ""
               : ""
           }
           onCancel={() => setShowPicker(null)}
           onSubmit={async (groupName) => {
-            // Bulk save from All (select mode)
-            if (view === "all" && selecting && selectedIds.size > 0) {
+            if (showPicker.mode === "bulk") {
               const chosenTabs = tabs.filter((t) => selectedIds.has(t.id));
               const now = Date.now();
               const payload = chosenTabs.map<SavedTab>((t) => ({
@@ -1095,7 +1009,7 @@ export default function Sidebar() {
               return;
             }
 
-            if (showPicker.mode === "save") {
+            if (showPicker.mode === "save" && showPicker.tab) {
               const t = showPicker.tab as TabInfo;
               const payload: SavedTab = {
                 id: `${t.id}-${Date.now()}`,
@@ -1108,7 +1022,7 @@ export default function Sidebar() {
               await chrome.runtime.sendMessage({ type: "SAVE_TAB", payload });
               await loadSaved();
               setView("saved");
-            } else {
+            } else if (showPicker.mode === "move" && showPicker.tab) {
               const s = showPicker.tab as SavedTab;
               await chrome.runtime.sendMessage({
                 type: "UPDATE_SAVED_TAB",
@@ -1120,10 +1034,10 @@ export default function Sidebar() {
             setShowPicker(null);
           }}
         />
-      ) : null}
+      )}
 
       {/* Delete group confirmation */}
-      {confirmDelete ? (
+      {confirmDelete && (
         <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50">
           <div className="bg-background text-foreground rounded-xl shadow-xl border p-5 w-[360px] max-w-[90vw]">
             <div className="font-semibold mb-2 text-lg">Delete group</div>
@@ -1132,14 +1046,14 @@ export default function Sidebar() {
             </p>
 
             <div className="flex flex-col gap-2">
-              {confirmDelete !== "Ungrouped" ? (
+              {confirmDelete !== "Ungrouped" && (
                 <button
                   className="px-3 py-2 border rounded text-left hover:bg-muted"
                   onClick={() => doDeleteGroup(confirmDelete, "ungroup")}
                 >
                   Move items to <strong>Ungrouped</strong>
                 </button>
-              ) : null}
+              )}
 
               <button
                 className="px-3 py-2 border rounded text-left hover:bg-muted"
@@ -1159,7 +1073,7 @@ export default function Sidebar() {
             </div>
           </div>
         </div>
-      ) : null}
+      )}
 
       {/* AI Summary modal */}
       <SummaryModal

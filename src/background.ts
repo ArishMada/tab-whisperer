@@ -1,7 +1,11 @@
+// background.ts (MV3 service worker, module)
+
 import type { SavedTab } from "./lib/storage";
 import { renameGroup } from "./lib/storage";
 import { summarizeTabs } from "./lib/gemini";
 import { groupTabsByIdStrict } from "./lib/gemini";
+
+/* ============================== Utils ============================== */
 
 const OPEN_KEY_PREFIX = "tw_open_"; // session-scoped
 const openKey = (winId: number) => `${OPEN_KEY_PREFIX}${winId}`;
@@ -27,12 +31,13 @@ function isRestricted(url?: string) {
 type MaybeTab = { title: string; url?: string };
 type BasicTab = { title: string; url: string };
 
-// ===== Action: click to toggle sidebar (and flip the per-window flag)
+/* =================== Browser Action: toggle sidebar =================== */
+
 chrome.action.onClicked.addListener(async (tab) => {
   if (!tab?.id) return;
 
   if (isRestricted(tab.url)) {
-    // popup path – don't persist
+    // Restricted pages → open popup HTML instead (do not persist open flag)
     await chrome.windows.create({
       url: chrome.runtime.getURL("sidebar.html"),
       type: "popup",
@@ -45,6 +50,7 @@ chrome.action.onClicked.addListener(async (tab) => {
   try {
     await chrome.tabs.sendMessage(tab.id, { type: "TOGGLE_SIDEBAR" });
   } catch {
+    // Content script not injected yet; inject and retry
     try {
       await chrome.scripting.executeScript({
         target: { tabId: tab.id },
@@ -52,6 +58,7 @@ chrome.action.onClicked.addListener(async (tab) => {
       });
       await chrome.tabs.sendMessage(tab.id, { type: "TOGGLE_SIDEBAR" });
     } catch {
+      // If injection still fails (e.g., blocked), fallback to popup
       await chrome.windows.create({
         url: chrome.runtime.getURL("sidebar.html"),
         type: "popup",
@@ -62,16 +69,17 @@ chrome.action.onClicked.addListener(async (tab) => {
     }
   }
 
-  // flip window flag
+  // Flip per-window open flag
   if (tab.windowId !== undefined) {
     const open = await isOpen(tab.windowId);
     await setOpen(tab.windowId, !open);
   }
 });
 
-// ===== Message router (one listener handling all message types)
+/* ========================== Message Router ========================== */
 
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
+  /* ---- Close sidebar in current window ---- */
   if (msg?.type === "CLOSE_SIDEBAR") {
     (async () => {
       const [active] = await chrome.tabs.query({
@@ -82,16 +90,18 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
         try {
           await chrome.tabs.sendMessage(active.id, { type: "TOGGLE_SIDEBAR" });
         } catch {
-          void 0; // ignore: not injected or restricted
+          /* not injected or restricted; ignore */
         }
-        if (active.windowId !== undefined)
+        if (active.windowId !== undefined) {
           await setOpen(active.windowId, false);
+        }
       }
       sendResponse({ ok: true });
     })();
     return true; // async
   }
 
+  /* ---- Snapshot all tabs (filtered) ---- */
   if (msg?.type === "GET_TABS_SNAPSHOT") {
     (async () => {
       const tabs = await chrome.tabs.query({});
@@ -108,6 +118,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     return true;
   }
 
+  /* ---- Load saved tabs ---- */
   if (msg?.type === "GET_SAVED_TABS") {
     (async () => {
       const { savedTabs } = await chrome.storage.local.get("savedTabs");
@@ -116,6 +127,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     return true;
   }
 
+  /* ---- Save a single tab (prepend newest) ---- */
   if (msg?.type === "SAVE_TAB") {
     (async () => {
       const { savedTabs } = await chrome.storage.local.get("savedTabs");
@@ -127,18 +139,16 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     return true;
   }
 
+  /* ---- Ask AI to group existing saved tabs (by SavedTab.id) ---- */
   if (msg?.type === "AUTO_GROUP_TABS") {
     (async () => {
       try {
-        // Expect: saved tabs only, supply id+title (no URLs)
+        // Expect: { tabs: [{id,title}] } only
         const { tabs } = msg as { tabs: Pick<SavedTab, "id" | "title">[] };
-
         const aiJson = await groupTabsByIdStrict(
           tabs.map((t) => ({ id: t.id, title: t.title || "(No title)" }))
         );
-
-        // The UI will pass this back via APPLY_GROUPS for a single write
-        sendResponse({ ok: true, groups: aiJson });
+        sendResponse({ ok: true, groups: aiJson }); // JSON text; UI applies via APPLY_GROUPS
       } catch (e) {
         sendResponse({ ok: false, error: String(e) });
       }
@@ -146,15 +156,15 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     return true;
   }
 
+  /* ---- Apply group mapping to saved tabs ---- */
   if (msg?.type === "APPLY_GROUPS") {
     (async () => {
       try {
-        // payload: { "<GroupName>":[ "<tabId>", ... ], ... }
+        // mapping: { "<Group>": ["<savedTabId>", ...], ... }
         const mapping = (msg.payload ?? {}) as Record<string, string[]>;
         const { savedTabs } = await chrome.storage.local.get("savedTabs");
         const all: SavedTab[] = (savedTabs ?? []) as SavedTab[];
 
-        // Build reverse index id -> group
         const idToGroup = new Map<string, string>();
         for (const [group, ids] of Object.entries(mapping)) {
           for (const id of ids) idToGroup.set(id, group);
@@ -174,18 +184,18 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     return true;
   }
 
-  // 1) Group currently open tabs (by id)
+  /* ---- AI groups for currently open tabs (preview only) ---- */
   if (msg?.type === "AUTO_GROUP_OPEN_TABS") {
     (async () => {
       try {
         const all = await chrome.tabs.query({ currentWindow: true });
-        // take only what's needed for prompting
         const skinny = all
-          .filter((t) => !!t.id)
+          .filter((t) => t.id != null)
           .map((t) => ({ id: String(t.id), title: t.title || "(No title)" }));
 
-        const groupsJson = await groupTabsByIdStrict(skinny); // <- returns minified JSON
-        sendResponse({ ok: true, groups: groupsJson, tabs: skinny }); // return skinny so UI can render titles under groups
+        const groupsJson = await groupTabsByIdStrict(skinny);
+        // Return skinny so UI can decorate with URLs/icons it already has
+        sendResponse({ ok: true, groups: groupsJson, tabs: skinny });
       } catch (e) {
         sendResponse({ ok: false, error: String(e) });
       }
@@ -193,7 +203,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     return true;
   }
 
-  // 2) Save selected groups (mapping: {GroupName:[tabId,…]})
+  /* ---- Persist selected preview groups from open tabs ---- */
   if (msg?.type === "SAVE_OPEN_GROUPS") {
     (async () => {
       try {
@@ -203,20 +213,19 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
         const byId = new Map<string, chrome.tabs.Tab>();
         for (const t of openTabs) if (t.id != null) byId.set(String(t.id), t);
 
-        // load current saved (narrow the unknown shape into SavedTab[])
         const store = await chrome.storage.local.get("savedTabs");
         const existing = store.savedTabs;
         const current: SavedTab[] = Array.isArray(existing)
           ? (existing as SavedTab[])
           : [];
 
-        // reverse map id->group for quick lookup
+        // Build reverse id -> group map
         const idToGroup = new Map<string, string>();
         for (const [g, ids] of Object.entries(mapping)) {
           for (const id of ids) idToGroup.set(id, g);
         }
 
-        // upsert selected tabs into savedTabs with assigned group
+        // Upsert into savedTabs
         const have = new Map<string, SavedTab>(
           current.map((t) => [String(t.id), t])
         );
@@ -227,18 +236,14 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
 
           const prev = have.get(id);
           const entry: SavedTab = {
-            // preserve previous fields if present
             ...(prev ?? ({} as SavedTab)),
-            id,
+            id, // use tab id as SavedTab.id for this path
             url: t.url ?? "",
             title: t.title ?? "",
             favIconUrl: t.favIconUrl ?? "",
             group,
-            // keep a savedAt if your SavedTab requires/uses it
-            // (fallback to previous or set now)
             savedAt: (prev as { savedAt?: number })?.savedAt ?? Date.now(),
           };
-
           have.set(id, entry);
         }
 
@@ -252,6 +257,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     return true;
   }
 
+  /* ---- Remove one saved tab ---- */
   if (msg?.type === "REMOVE_SAVED_TAB") {
     (async () => {
       const { savedTabs } = await chrome.storage.local.get("savedTabs");
@@ -264,13 +270,14 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     return true;
   }
 
+  /* ---- Patch a saved tab (e.g., move group) ---- */
   if (msg?.type === "UPDATE_SAVED_TAB") {
     (async () => {
       const { savedTabs } = await chrome.storage.local.get("savedTabs");
       const all: SavedTab[] = savedTabs ?? [];
       const i = all.findIndex((t) => t.id === msg.id);
       if (i >= 0) {
-        all[i] = { ...all[i], ...(msg.patch ?? {}) }; // e.g. { group: "Research" }
+        all[i] = { ...all[i], ...(msg.patch ?? {}) };
         await chrome.storage.local.set({ savedTabs: all });
         sendResponse({ ok: true, tab: all[i] });
       } else {
@@ -280,11 +287,11 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     return true;
   }
 
+  /* ---- Rename a group (except Ungrouped) ---- */
   if (msg?.type === "RENAME_GROUP") {
     (async () => {
       const { from, to } = msg as { from: string; to: string };
       if (from === "Ungrouped") {
-        // hard guard
         sendResponse({ ok: false, error: "CANNOT_RENAME_UNGROUPED" });
         return;
       }
@@ -295,6 +302,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     return true;
   }
 
+  /* ---- Delete or ungroup a group ---- */
   if (msg?.type === "DELETE_GROUP") {
     (async () => {
       try {
@@ -307,24 +315,22 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
 
         const belongs = (t: SavedTab) =>
           name === "Ungrouped" ? !t.group : t.group === name;
+
         const next =
           mode === "remove"
             ? all.filter((t) => !belongs(t))
             : all.map((t) => (belongs(t) ? { ...t, group: undefined } : t));
 
         await chrome.storage.local.set({ savedTabs: next });
-        sendResponse({ ok: true });
-
-        // IMPORTANT: reply so the Promise on the UI side resolves
-        sendResponse({ ok: true, tabs: next });
+        sendResponse({ ok: true, tabs: next }); // single response (fixed)
       } catch (e) {
         sendResponse({ ok: false, error: String(e) });
       }
     })();
-    return true; // keep channel open for async sendResponse
+    return true; // async
   }
 
-  // SAVE ALL TABS IN CURRENT WINDOW
+  /* ---- Save all tabs in current window ---- */
   if (msg?.type === "SAVE_ALL_IN_WINDOW") {
     (async () => {
       const { windowId } = msg as { windowId?: number };
@@ -364,19 +370,20 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     return true;
   }
 
+  /* ---- Save a batch provided by UI ---- */
   if (msg?.type === "SAVE_TABS_BULK") {
     (async () => {
       const { savedTabs } = await chrome.storage.local.get("savedTabs");
       const all: SavedTab[] = savedTabs ?? [];
       const incoming: SavedTab[] = (msg.payload ?? []) as SavedTab[];
-      // newest first like single SAVE_TAB
-      const next = [...incoming, ...all];
+      const next = [...incoming, ...all]; // newest first
       await chrome.storage.local.set({ savedTabs: next });
       sendResponse({ ok: true, count: incoming.length });
     })();
     return true;
   }
 
+  /* ---- Summarize tabs with AI ---- */
   if (msg?.type === "SUMMARIZE_TABS") {
     (async () => {
       const { tabs, prompt } = msg as { tabs: MaybeTab[]; prompt?: string };
@@ -396,8 +403,11 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     return true;
   }
 
+  // No handler matched
   return undefined;
 });
+
+/* ============ Keep sidebar alive across tab switches/loads ============ */
 
 chrome.tabs.onActivated.addListener(async ({ tabId, windowId }) => {
   if (await isOpen(windowId)) {
@@ -407,12 +417,12 @@ chrome.tabs.onActivated.addListener(async ({ tabId, windowId }) => {
         files: ["content.js"],
       });
     } catch {
-      void 0;
+      /* ignore */
     }
     try {
       await chrome.tabs.sendMessage(tabId, { type: "ENSURE_SIDEBAR" });
     } catch {
-      void 0;
+      /* ignore */
     }
   }
 });
@@ -427,12 +437,12 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
             files: ["content.js"],
           });
         } catch {
-          void 0;
+          /* ignore */
         }
         try {
           await chrome.tabs.sendMessage(tabId, { type: "ENSURE_SIDEBAR" });
         } catch {
-          void 0;
+          /* ignore */
         }
       }
     }
