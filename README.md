@@ -53,11 +53,10 @@ All powered **locally** by **Gemini Nano** — *no data ever leaves your browser
 > ```
 > _You can replace this block later with your own Figma or Mermaid diagram._
 
+
+
 ---
-
 ## 🏗️ Folder Structure
-
-````
 
 tab-whisperer/
 ├── src/
@@ -80,8 +79,6 @@ tab-whisperer/
 └── README.md
 
 ````
-
----
 
 ## ⚙️ Tech Stack
 
@@ -197,6 +194,3 @@ inspired by the vision of **making browsing effortless with on-device intelligen
 
 > *“Whisper to your tabs — and they’ll whisper back what matters most.”*
 
----
-
-```
