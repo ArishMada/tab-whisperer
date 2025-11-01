@@ -7,7 +7,7 @@
 ---
 
 ## 🎥 Demo Video
-🎬 *[Watch the Demo — Coming Soon!](https://drive.google.com/file/d/1UVx1CmOVqvXfQ4bW5gS1bVx5TuAeVPAr/view?usp=sharing)*  
+🎬 *[Watch the Demo — Here!](https://drive.google.com/file/d/1UVx1CmOVqvXfQ4bW5gS1bVx5TuAeVPAr/view?usp=sharing)*  
 
 ---
 
