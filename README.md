@@ -7,12 +7,12 @@
 ---
 
 ## 🎥 Demo Video
-🎬 *[Watch the Demo — Coming Soon!](#)*  
+🎬 *[Watch the Demo — Coming Soon!](https://drive.google.com/file/d/1UVx1CmOVqvXfQ4bW5gS1bVx5TuAeVPAr/view?usp=sharing)*  
 
 ---
 
 ## 🧩 Try It Yourself
-📦 *[Download Tab Whisperer (ZIP)](https://drive.google.com/file/d/1UVx1CmOVqvXfQ4bW5gS1bVx5TuAeVPAr/view?usp=sharing)*  
+📦 *[Download Tab Whisperer (ZIP)]()*  
 
 ---
 
