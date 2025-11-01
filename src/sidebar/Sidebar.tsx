@@ -1,3 +1,4 @@
+import * as React from "react";
 import { useEffect, useMemo, useState, useCallback } from "react";
 import { SummaryModal } from "../components/SummaryModal";
 import { stripCodeFences, toRenderableGroups } from "../lib/autoGroupHelpers";
@@ -40,7 +41,7 @@ type SavedTab = {
 };
 
 type SuggestedItem = {
-  id: string;
+  id: string; // chrome tab id as string
   title: string;
   favIconUrl?: string;
   url?: string;
@@ -85,13 +86,27 @@ export default function Sidebar() {
 
   const [recapLoading, setRecapLoading] = useState(false);
   const [autoGroupLoading, setAutoGroupLoading] = useState(false);
-  const [groupSummarizing, setGroupSummarizing] = useState<string | null>(null);
+  const [groupSummarizing, setGroupSummarizing] = useState<string | null>(null); // saved-group summarize spinner
 
   const [showPicker, setShowPicker] = useState<null | {
     mode: "save" | "move" | "bulk";
     tab?: TabInfo | SavedTab;
   }>(null);
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
+
+  // Per-tab summarizing spinners
+  const [tabSummarizingId, setTabSummarizingId] = useState<number | null>(null); // ALL view (open tab)
+  const [savedTabSummarizingId, setSavedTabSummarizingId] = useState<
+    string | null
+  >(null); // SAVED view (by url)
+
+  // NEW: preview-only summarize spinners
+  const [previewGroupSummarizing, setPreviewGroupSummarizing] = useState<
+    string | null
+  >(null);
+  const [previewTabSummarizingId, setPreviewTabSummarizingId] = useState<
+    string | null
+  >(null);
 
   const inExtension = useMemo(
     () => typeof chrome !== "undefined" && !!chrome.runtime?.id,
@@ -209,7 +224,6 @@ export default function Sidebar() {
         return next;
       });
 
-      // If preview is open, append new tab into Ungrouped (will be refined on update)
       if (hasSuggestions && typeof tab?.id === "number") {
         setSuggested((prev) => {
           const next = { ...prev };
@@ -588,6 +602,85 @@ export default function Sidebar() {
     setSelectedSuggestedItems(new Set());
   }
 
+  /* -------- Per-tab/group summary helpers -------- */
+  async function summarizeOneOpenTab(
+    tabId: number,
+    style: "bullets" | "blurb" = "bullets"
+  ) {
+    try {
+      setTabSummarizingId(tabId);
+      const res = await chrome.runtime.sendMessage({
+        type: "SUMMARIZE_TAB",
+        tabId,
+        style,
+      });
+      setSummaryText(
+        res?.ok ? res.summary : `Error: ${res?.error ?? "Unknown error"}`
+      );
+      setSummaryOpen(true);
+    } finally {
+      setTabSummarizingId(null);
+    }
+  }
+
+  // NEW: preview — summarize a suggested group without saving
+  async function summarizePreviewGroup(groupName: string) {
+    try {
+      setPreviewGroupSummarizing(groupName);
+      const items = suggested[groupName] ?? [];
+      const groupTabs = items.map(({ title, url }) => ({ title, url }));
+      const userPrompt = prompt("Optional: Add extra instruction for AI") || "";
+      const res = await chrome.runtime.sendMessage({
+        type: "SUMMARIZE_TABS",
+        tabs: groupTabs,
+        prompt: userPrompt,
+      });
+      setSummaryText(
+        res?.ok ? res.summary : `Error: ${res?.error ?? "Unknown error"}`
+      );
+      setSummaryOpen(true);
+    } finally {
+      setPreviewGroupSummarizing(null);
+    }
+  }
+
+  // NEW: preview — summarize a suggested item by its open tabId
+  async function summarizePreviewTab(idStr: string) {
+    try {
+      setPreviewTabSummarizingId(idStr);
+      const numericId = Number(idStr);
+      const res = await chrome.runtime.sendMessage({
+        type: "SUMMARIZE_TAB",
+        tabId: numericId,
+        style: "bullets",
+      });
+      setSummaryText(
+        res?.ok ? res.summary : `Error: ${res?.error ?? "Unknown error"}`
+      );
+      setSummaryOpen(true);
+    } finally {
+      setPreviewTabSummarizingId(null);
+    }
+  }
+
+  // NEW: saved — summarize one saved tab (works even if not open)
+  async function summarizeSavedTab(tab: SavedTab) {
+    try {
+      setSavedTabSummarizingId(tab.id);
+      const res = await chrome.runtime.sendMessage({
+        type: "SUMMARIZE_TABS",
+        tabs: [{ title: tab.title, url: tab.url }],
+        prompt: "",
+      });
+      setSummaryText(
+        res?.ok ? res.summary : `Error: ${res?.error ?? "Unknown error"}`
+      );
+      setSummaryOpen(true);
+    } finally {
+      setSavedTabSummarizingId(null);
+    }
+  }
+
   /* ------------------ UI ------------------ */
   return (
     <div className="min-h-full text-foreground bg-white/40 dark:bg-neutral-900/50 backdrop-blur-lg border-l border-white/20 dark:border-white/10">
@@ -716,7 +809,7 @@ export default function Sidebar() {
 
               {hasSuggestions ? (
                 <>
-                  {/* One Save button in Auto-Group preview */}
+                  {/* Save buttons in Auto-Group preview */}
                   <button
                     className="h-8 px-3 rounded-md bg-black text-white text-xs hover:opacity-90 disabled:opacity-50"
                     onClick={() => setAutoPickerOpen(true)}
@@ -806,6 +899,19 @@ export default function Sidebar() {
                     <span>{group}</span>
                     <span className="text-sm opacity-60">({items.length})</span>
                   </label>
+
+                  {/* NEW: Summarize this suggested group (no save) */}
+                  <button
+                    className="text-xs px-2 py-1 rounded border ml-2 flex items-center gap-2 disabled:opacity-50"
+                    disabled={previewGroupSummarizing === group}
+                    onClick={() => summarizePreviewGroup(group)}
+                    title="Summarize this group without saving"
+                  >
+                    {previewGroupSummarizing === group ? (
+                      <Spinner className="h-3.5 w-3.5" />
+                    ) : null}
+                    <span>Summarize</span>
+                  </button>
                 </div>
                 <ul className="px-3 pb-3 space-y-2">
                   {items.map((i) => (
@@ -849,7 +955,19 @@ export default function Sidebar() {
                         >
                           Open
                         </button>
-                        {/* per-item Save removed in preview */}
+
+                        {/* NEW: per-tab summarize in preview (uses open tabId) */}
+                        <button
+                          className="text-xs px-2 py-1 rounded border flex items-center gap-1 disabled:opacity-50"
+                          title="Summarize this tab without saving"
+                          disabled={previewTabSummarizingId === i.id}
+                          onClick={() => summarizePreviewTab(i.id)}
+                        >
+                          {previewTabSummarizingId === i.id ? (
+                            <Spinner className="h-3.5 w-3.5" />
+                          ) : null}
+                          <span>Summarize</span>
+                        </button>
                       </div>
                     </li>
                   ))}
@@ -909,6 +1027,19 @@ export default function Sidebar() {
                       onClick={() => setShowPicker({ mode: "save", tab: t })}
                     >
                       Save
+                    </button>
+
+                    {/* per-tab Summarize (open tabId) */}
+                    <button
+                      className="text-xs px-2 py-1 rounded border flex items-center gap-1 disabled:opacity-50"
+                      title="Summarize this tab"
+                      disabled={tabSummarizingId === t.id}
+                      onClick={() => summarizeOneOpenTab(t.id, "bullets")}
+                    >
+                      {tabSummarizingId === t.id ? (
+                        <Spinner className="h-3.5 w-3.5" />
+                      ) : null}
+                      <span>Summarize</span>
                     </button>
                   </div>
                 </li>
@@ -976,7 +1107,7 @@ export default function Sidebar() {
                       </button>
                     )}
 
-                    {/* summarize group */}
+                    {/* summarize group (saved) */}
                     <button
                       className="text-xs px-2 py-1 rounded border ml-2 flex items-center gap-2 disabled:opacity-50"
                       disabled={groupSummarizing === groupName}
@@ -1091,6 +1222,19 @@ export default function Sidebar() {
                               onClick={() => removeSaved(s.id)}
                             >
                               Remove
+                            </button>
+
+                            {/* NEW: per-saved-tab summarize (by URL) */}
+                            <button
+                              className="text-xs px-2 py-1 rounded border flex items-center gap-1 disabled:opacity-50"
+                              title="Summarize this saved tab"
+                              disabled={savedTabSummarizingId === s.id}
+                              onClick={() => summarizeSavedTab(s)}
+                            >
+                              {savedTabSummarizingId === s.id ? (
+                                <Spinner className="h-3.5 w-3.5" />
+                              ) : null}
+                              <span>Summarize</span>
                             </button>
                           </div>
                         </li>

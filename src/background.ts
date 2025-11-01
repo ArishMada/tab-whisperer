@@ -4,6 +4,7 @@ import type { SavedTab } from "./lib/storage";
 import { renameGroup } from "./lib/storage";
 import { summarizeTabs } from "./lib/gemini";
 import { groupTabsByIdStrict } from "./lib/gemini";
+import { summarizePage } from "./lib/gemini";
 
 /* ============================== Utils ============================== */
 
@@ -405,6 +406,57 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       }
     })();
     return true;
+  }
+
+  /* ---- Summarize ONE tab (by id) ---- */
+  if (msg?.type === "SUMMARIZE_TAB") {
+    (async () => {
+      try {
+        const { tabId, style } = msg as {
+          tabId: number;
+          style?: "bullets" | "blurb";
+        };
+
+        type ExtractResult = { title: string; text: string };
+
+        const injected = await chrome.scripting.executeScript({
+          target: { tabId },
+          func: () => {
+            const title = document.title || "(No title)";
+            const text = (document.body?.innerText || "")
+              .replace(/\s+\n/g, "\n")
+              .replace(/[ \t]+/g, " ");
+            return { title, text };
+          },
+        });
+
+        const res =
+          (injected?.[0]?.result as ExtractResult | undefined) ?? undefined;
+
+        // Guard against undefined 'result' (fixes TS18048)
+        if (!res) {
+          // Fallback: try to get the tab title to at least return something meaningful
+          const t = await chrome.tabs.get(tabId).catch(() => null);
+          const fallbackTitle = t?.title || "(No title)";
+          sendResponse({
+            ok: false,
+            error: "NO_PAGE_TEXT_EXTRACTED",
+            title: fallbackTitle,
+          });
+          return;
+        }
+
+        const summary = await summarizePage(
+          res.title,
+          res.text,
+          style ?? "bullets"
+        );
+        sendResponse({ ok: true, summary });
+      } catch (e) {
+        sendResponse({ ok: false, error: String(e) });
+      }
+    })();
+    return true; // async
   }
 
   // No handler matched

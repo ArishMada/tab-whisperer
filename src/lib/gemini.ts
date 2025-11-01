@@ -178,3 +178,36 @@ Return JSON now:`;
     return await postGenerateContent(model, prompt);
   }
 }
+
+export async function summarizePage(
+  title: string,
+  text: string,
+  style: "bullets" | "blurb" = "bullets"
+): Promise<string> {
+  // Keep prompt tiny and deterministic
+  const ask =
+    style === "bullets"
+      ? `Summarize the page in 3–5 crisp bullet points. No fluff, no headers.`
+      : `Summarize in 2 short sentences. Be clear and factual.`;
+
+  const prompt =
+    `You are summarizing a single web page.\n` +
+    `Title: ${title}\n\n` +
+    `Content (truncated):\n` +
+    text.slice(0, 8000) + // guard token size
+    `\n\n${ask}`;
+
+  // Prefer flash; fallback the same way as the others.
+  let model = "models/gemini-1.5-flash-latest";
+  try {
+    return await postGenerateContent(model, prompt);
+  } catch (e) {
+    const is404 =
+      e instanceof Error &&
+      /(^|[\s{"])404([\s}",]|$)/.test(e.message) &&
+      /NOT_FOUND|is not found|not supported/.test(e.message);
+    if (!is404) throw e;
+    model = await resolveUsableModel();
+    return await postGenerateContent(model, prompt);
+  }
+}
