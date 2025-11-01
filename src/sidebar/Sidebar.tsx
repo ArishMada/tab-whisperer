@@ -29,6 +29,59 @@ function Spinner({ className = "h-4 w-4" }: { className?: string }) {
   );
 }
 
+/* Compact icons for the new UI */
+function BookmarkIcon({
+  filled = false,
+  className = "w-4 h-4",
+}: {
+  filled?: boolean;
+  className?: string;
+}) {
+  return filled ? (
+    <svg
+      viewBox="0 0 24 24"
+      className={className}
+      fill="currentColor"
+      aria-hidden="true"
+    >
+      <path d="M6 2h12a1 1 0 0 1 1 1v18l-7-4-7 4V3a1 1 0 0 1 1-1z" />
+    </svg>
+  ) : (
+    <svg
+      viewBox="0 0 24 24"
+      className={className}
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      aria-hidden="true"
+    >
+      <path d="M6 2h12a1 1 0 0 1 1 1v18l-7-4-7 4V3a1 1 0 0 1 1-1z" />
+    </svg>
+  );
+}
+function ChevronIcon({
+  open = false,
+  className = "w-4 h-4",
+}: {
+  open?: boolean;
+  className?: string;
+}) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      className={`${className} transition-transform ${
+        open ? "rotate-180" : ""
+      }`}
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      aria-hidden="true"
+    >
+      <path d="M6 9l6 6 6-6" />
+    </svg>
+  );
+}
+
 /* ------------------ Types ------------------ */
 type TabInfo = { id: number; title: string; url: string; favIconUrl?: string };
 type SavedTab = {
@@ -73,6 +126,12 @@ function onIconError(
   if (img.dataset.fallback === "1") return; // avoid loop
   img.dataset.fallback = "1";
   img.src = chrome.runtime.getURL("icons/Logo.png");
+}
+
+/* Light helper to match saved state by URL (used for the bookmark toggle) */
+function savedMatchFor(saved: SavedTab[], url: string | undefined) {
+  if (!url) return undefined;
+  return saved.find((s) => s.url === url);
 }
 
 /* =======================================================
@@ -681,6 +740,50 @@ export default function Sidebar() {
     }
   }
 
+  /* --- UI-only additions for the bookmark toggle + action trays --- */
+  const [openExpanded, setOpenExpanded] = useState<Set<number>>(new Set());
+  const [savedExpanded, setSavedExpanded] = useState<Set<string>>(new Set());
+  const toggleOpenExpanded = (id: number) =>
+    setOpenExpanded((prev) => {
+      const n = new Set(prev);
+      if (n.has(id)) {
+        n.delete(id);
+      } else {
+        n.add(id);
+      }
+      return n;
+    });
+
+  const toggleSavedExpanded = (id: string) =>
+    setSavedExpanded((prev) => {
+      const n = new Set(prev);
+      if (n.has(id)) {
+        n.delete(id);
+      } else {
+        n.add(id);
+      }
+      return n;
+    });
+
+  async function quickSaveOpenTab(t: TabInfo) {
+    const payload: SavedTab = {
+      id: `${t.id}-${Date.now()}`,
+      title: t.title || "(No title)",
+      url: t.url,
+      favIconUrl: t.favIconUrl,
+      savedAt: Date.now(),
+      group: undefined,
+    };
+    const res = await chrome.runtime.sendMessage({ type: "SAVE_TAB", payload });
+    if (res?.ok) await loadSaved();
+  }
+  async function removeSavedByUrl(url: string) {
+    const hit = savedMatchFor(saved, url);
+    if (!hit) return;
+    await chrome.runtime.sendMessage({ type: "REMOVE_SAVED_TAB", id: hit.id });
+    await loadSaved();
+  }
+
   /* ------------------ UI ------------------ */
   return (
     <div className="min-h-full text-foreground bg-white/40 dark:bg-neutral-900/50 backdrop-blur-lg border-l border-white/20 dark:border-white/10">
@@ -917,12 +1020,12 @@ export default function Sidebar() {
                   {items.map((i) => (
                     <li
                       key={i.id}
-                      className="p-2 rounded-lg border bg-card shadow-sm flex items-center gap-3"
+                      className="p-2 rounded-lg border bg-card shadow-sm flex items-start flex-wrap gap-3"
                     >
                       {/* item checkbox */}
                       <input
                         type="checkbox"
-                        className="h-4 w-4"
+                        className="h-4 w-4 mt-1"
                         checked={
                           selectedSuggestedGroups.has(group) ||
                           selectedSuggestedItems.has(i.id)
@@ -932,7 +1035,7 @@ export default function Sidebar() {
 
                       <img
                         src={faviconFor(inExtension, i.url, i.favIconUrl)}
-                        className="w-5 h-5 rounded-sm"
+                        className="w-5 h-5 rounded-sm mt-0.5"
                         onError={(e) => onIconError(e, inExtension)}
                         alt=""
                       />
@@ -986,64 +1089,97 @@ export default function Sidebar() {
             )}
 
             <ul className="space-y-2">
-              {tabs.map((t) => (
-                <li
-                  key={t.id}
-                  className="p-2 rounded-lg border bg-card shadow-sm flex items-center gap-3"
-                >
-                  <input
-                    type="checkbox"
-                    className="h-4 w-4"
-                    checked={selectedIds.has(t.id)}
-                    onChange={() => toggleOne(t.id)}
-                  />
+              {tabs.map((t) => {
+                const isSaved = !!savedMatchFor(saved, t.url);
+                return (
+                  <li
+                    key={t.id}
+                    className="p-2 rounded-lg border bg-card shadow-sm flex items-start flex-wrap gap-3"
+                  >
+                    <input
+                      type="checkbox"
+                      className="h-4 w-4 mt-1"
+                      checked={selectedIds.has(t.id)}
+                      onChange={() => toggleOne(t.id)}
+                    />
 
-                  <img
-                    src={faviconFor(inExtension, t.url, t.favIconUrl)}
-                    className="w-5 h-5 rounded-sm"
-                    onError={(e) => onIconError(e, inExtension)}
-                    alt=""
-                  />
-                  <div className="min-w-0">
-                    <div className="text-sm font-medium truncate">
-                      {t.title || "(No title)"}
+                    <img
+                      src={faviconFor(inExtension, t.url, t.favIconUrl)}
+                      className="w-5 h-5 rounded-sm mt-0.5"
+                      onError={(e) => onIconError(e, inExtension)}
+                      alt=""
+                    />
+                    <div className="min-w-0">
+                      <div className="text-sm font-medium truncate">
+                        {t.title || "(No title)"}
+                      </div>
+                      <div className="text-[11px] opacity-60 truncate">
+                        {t.url}
+                      </div>
                     </div>
-                    <div className="text-[11px] opacity-60 truncate">
-                      {t.url}
+
+                    <div className="ml-auto flex items-center gap-1">
+                      {/* Bookmark toggle */}
+                      <button
+                        className="h-7 w-7 rounded-md border bg-background hover:bg-accent flex items-center justify-center"
+                        title={isSaved ? "Remove from Saved" : "Save"}
+                        onClick={async () => {
+                          if (isSaved) await removeSavedByUrl(t.url);
+                          else await quickSaveOpenTab(t);
+                        }}
+                      >
+                        <BookmarkIcon filled={isSaved} />
+                      </button>
+
+                      {/* Chevron to reveal secondary actions */}
+                      <button
+                        className="h-7 w-7 rounded-md border bg-background hover:bg-accent flex items-center justify-center"
+                        title="More"
+                        onClick={() => toggleOpenExpanded(t.id)}
+                      >
+                        <ChevronIcon open={openExpanded.has(t.id)} />
+                      </button>
                     </div>
-                  </div>
 
-                  <div className="ml-auto flex gap-2">
-                    <button
-                      className="text-xs px-2 py-1 rounded border"
-                      onClick={() =>
-                        chrome.tabs.update(Number(t.id), { active: true })
-                      }
-                    >
-                      Open
-                    </button>
-                    <button
-                      className="text-xs px-2 py-1 rounded border"
-                      onClick={() => setShowPicker({ mode: "save", tab: t })}
-                    >
-                      Save
-                    </button>
+                    {/* Collapsible action tray */}
+                    {openExpanded.has(t.id) && (
+                      <div className="basis-full px-2 pt-2">
+                        <div className="flex flex-wrap gap-2">
+                          <button
+                            className="text-xs px-2 py-1 rounded border"
+                            onClick={() =>
+                              chrome.tabs.update(Number(t.id), { active: true })
+                            }
+                          >
+                            Open
+                          </button>
+                          <button
+                            className="text-xs px-2 py-1 rounded border"
+                            onClick={() =>
+                              setShowPicker({ mode: "save", tab: t })
+                            }
+                          >
+                            Move to group…
+                          </button>
 
-                    {/* per-tab Summarize (open tabId) */}
-                    <button
-                      className="text-xs px-2 py-1 rounded border flex items-center gap-1 disabled:opacity-50"
-                      title="Summarize this tab"
-                      disabled={tabSummarizingId === t.id}
-                      onClick={() => summarizeOneOpenTab(t.id, "bullets")}
-                    >
-                      {tabSummarizingId === t.id ? (
-                        <Spinner className="h-3.5 w-3.5" />
-                      ) : null}
-                      <span>Summarize</span>
-                    </button>
-                  </div>
-                </li>
-              ))}
+                          {/* per-tab Summarize (open tabId) */}
+                          <button
+                            className="text-xs px-2 py-1 rounded border flex items-center gap-1 disabled:opacity-50"
+                            title="Summarize this tab"
+                            disabled={tabSummarizingId === t.id}
+                            onClick={() => summarizeOneOpenTab(t.id, "bullets")}
+                          >
+                            {tabSummarizingId === t.id ? (
+                              <Spinner className="h-3.5 w-3.5" />
+                            ) : null}
+                            <span>Summarize</span>
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                  </li>
+                );
+              })}
             </ul>
           </>
         )}
@@ -1186,11 +1322,11 @@ export default function Sidebar() {
                       {items.map((s) => (
                         <li
                           key={s.id}
-                          className="p-2 rounded-lg border bg-card shadow-sm flex items-center gap-3"
+                          className="p-2 rounded-lg border bg-card shadow-sm flex items-start flex-wrap gap-3"
                         >
                           <img
                             src={faviconFor(inExtension, s.url, s.favIconUrl)}
-                            className="w-5 h-5 rounded-sm"
+                            className="w-5 h-5 rounded-sm mt-0.5"
                             onError={(e) => onIconError(e, inExtension)}
                             alt=""
                           />
@@ -1202,41 +1338,69 @@ export default function Sidebar() {
                               {s.url}
                             </div>
                           </div>
-                          <div className="ml-auto flex gap-2">
+
+                          <div className="ml-auto flex items-center gap-1">
+                            {/* Filled bookmark — click to remove */}
                             <button
-                              className="text-xs px-2 py-1 rounded border"
-                              onClick={() => chrome.tabs.create({ url: s.url })}
-                            >
-                              Open
-                            </button>
-                            <button
-                              className="text-xs px-2 py-1 rounded border"
-                              onClick={() =>
-                                setShowPicker({ mode: "move", tab: s })
-                              }
-                            >
-                              Move
-                            </button>
-                            <button
-                              className="text-xs px-2 py-1 rounded border"
+                              className="h-7 w-7 rounded-md border bg-background hover:bg-accent flex items-center justify-center"
+                              title="Remove from Saved"
                               onClick={() => removeSaved(s.id)}
                             >
-                              Remove
+                              <BookmarkIcon filled />
                             </button>
 
-                            {/* NEW: per-saved-tab summarize (by URL) */}
+                            {/* Chevron to reveal actions */}
                             <button
-                              className="text-xs px-2 py-1 rounded border flex items-center gap-1 disabled:opacity-50"
-                              title="Summarize this saved tab"
-                              disabled={savedTabSummarizingId === s.id}
-                              onClick={() => summarizeSavedTab(s)}
+                              className="h-7 w-7 rounded-md border bg-background hover:bg-accent flex items-center justify-center"
+                              title="More"
+                              onClick={() => toggleSavedExpanded(s.id)}
                             >
-                              {savedTabSummarizingId === s.id ? (
-                                <Spinner className="h-3.5 w-3.5" />
-                              ) : null}
-                              <span>Summarize</span>
+                              <ChevronIcon open={savedExpanded.has(s.id)} />
                             </button>
                           </div>
+
+                          {/* Collapsible action tray */}
+                          {savedExpanded.has(s.id) && (
+                            <div className="basis-full px-2 pt-2">
+                              <div className="flex flex-wrap gap-2">
+                                <button
+                                  className="text-xs px-2 py-1 rounded border"
+                                  onClick={() =>
+                                    chrome.tabs.create({ url: s.url })
+                                  }
+                                >
+                                  Open
+                                </button>
+                                <button
+                                  className="text-xs px-2 py-1 rounded border"
+                                  onClick={() =>
+                                    setShowPicker({ mode: "move", tab: s })
+                                  }
+                                >
+                                  Move to group…
+                                </button>
+                                <button
+                                  className="text-xs px-2 py-1 rounded border"
+                                  onClick={() => removeSaved(s.id)}
+                                >
+                                  Remove
+                                </button>
+
+                                {/* NEW: per-saved-tab summarize (by URL) */}
+                                <button
+                                  className="text-xs px-2 py-1 rounded border flex items-center gap-1 disabled:opacity-50"
+                                  title="Summarize this saved tab"
+                                  disabled={savedTabSummarizingId === s.id}
+                                  onClick={() => summarizeSavedTab(s)}
+                                >
+                                  {savedTabSummarizingId === s.id ? (
+                                    <Spinner className="h-3.5 w-3.5" />
+                                  ) : null}
+                                  <span>Summarize</span>
+                                </button>
+                              </div>
+                            </div>
+                          )}
                         </li>
                       ))}
                     </ul>
