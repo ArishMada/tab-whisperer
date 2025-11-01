@@ -149,13 +149,21 @@ export default function Sidebar() {
   const [selectedSuggestedGroups, setSelectedSuggestedGroups] = useState<
     Set<string>
   >(new Set());
+  const [selectedSuggestedItems, setSelectedSuggestedItems] = useState<
+    Set<string>
+  >(new Set()); // item-level selection
+
   const hasSuggestions = Object.keys(suggested).length > 0;
 
   // restore preview state
   useEffect(() => {
     if (!inExtension) return;
     chrome.storage.local
-      .get(["tw_suggested", "tw_suggested_selected"])
+      .get([
+        "tw_suggested",
+        "tw_suggested_selected",
+        "tw_suggested_items_selected",
+      ])
       .then((obj) => {
         if (obj?.tw_suggested && typeof obj.tw_suggested === "object") {
           setSuggested(obj.tw_suggested as Record<string, SuggestedItem[]>);
@@ -163,6 +171,11 @@ export default function Sidebar() {
         if (Array.isArray(obj?.tw_suggested_selected)) {
           setSelectedSuggestedGroups(
             new Set(obj.tw_suggested_selected as string[])
+          );
+        }
+        if (Array.isArray(obj?.tw_suggested_items_selected)) {
+          setSelectedSuggestedItems(
+            new Set(obj.tw_suggested_items_selected as string[])
           );
         }
       });
@@ -174,8 +187,9 @@ export default function Sidebar() {
     chrome.storage.local.set({
       tw_suggested: suggested,
       tw_suggested_selected: Array.from(selectedSuggestedGroups),
+      tw_suggested_items_selected: Array.from(selectedSuggestedItems),
     });
-  }, [inExtension, suggested, selectedSuggestedGroups]);
+  }, [inExtension, suggested, selectedSuggestedGroups, selectedSuggestedItems]);
 
   /* ------------------ Live tab updates ------------------ */
   useEffect(() => {
@@ -195,6 +209,7 @@ export default function Sidebar() {
         return next;
       });
 
+      // If preview is open, append new tab into Ungrouped (will be refined on update)
       if (hasSuggestions && typeof tab?.id === "number") {
         setSuggested((prev) => {
           const next = { ...prev };
@@ -221,6 +236,11 @@ export default function Sidebar() {
             if (kept.length > 0) next[g] = kept;
           }
           return next;
+        });
+        setSelectedSuggestedItems((prev) => {
+          const n = new Set(prev);
+          n.delete(String(tabId));
+          return n;
         });
       }
     };
@@ -253,6 +273,26 @@ export default function Sidebar() {
               : t
           )
         );
+
+        // keep preview in sync so "New Tab" becomes real title/url
+        if (hasSuggestions) {
+          setSuggested((prev) => {
+            const next: Record<string, SuggestedItem[]> = {};
+            for (const [g, items] of Object.entries(prev)) {
+              next[g] = items.map((i) =>
+                i.id === String(tabId)
+                  ? {
+                      ...i,
+                      title: tab?.title ?? i.title,
+                      url: tab?.url ?? i.url,
+                      favIconUrl: tab?.favIconUrl ?? i.favIconUrl,
+                    }
+                  : i
+              );
+            }
+            return next;
+          });
+        }
       }
     };
 
@@ -399,11 +439,13 @@ export default function Sidebar() {
       const groups: Record<string, { id: string; title: string }[]> =
         toRenderableGroups(jsonText, res.tabs ?? []);
 
-      type OpenTabLite = { id?: number; url?: string; favIconUrl?: string };
-
-      // enrich with url + favIcon
+      // enrich with url + favIcon (background returns them)
       const byId = new Map<string, { url?: string; favIconUrl?: string }>();
-      const rawTabs: OpenTabLite[] = (res.tabs ?? []) as OpenTabLite[];
+      const rawTabs = (res.tabs ?? []) as Array<{
+        id?: number | string;
+        url?: string;
+        favIconUrl?: string;
+      }>;
       for (const t of rawTabs) {
         if (t?.id != null) {
           byId.set(String(t.id), { url: t.url, favIconUrl: t.favIconUrl });
@@ -426,36 +468,116 @@ export default function Sidebar() {
       // PREVIEW ONLY; nothing is persisted yet.
       setSuggested(enriched);
       setSelectedSuggestedGroups(new Set());
+      setSelectedSuggestedItems(new Set());
       setView("all");
     } finally {
       setIsGrouping(false);
     }
   }
 
+  // Toggle entire group and (de)select all its items for clarity
   function toggleSuggestedPick(name: string) {
     setSelectedSuggestedGroups((prev) => {
       const next = new Set(prev);
-      if (next.has(name)) next.delete(name);
-      else next.add(name);
+      const selecting = !next.has(name);
+      if (selecting) next.add(name);
+      else next.delete(name);
+
+      setSelectedSuggestedItems((prevItems) => {
+        const ids = (suggested[name] ?? []).map((i) => i.id);
+        const ni = new Set(prevItems);
+        if (selecting) ids.forEach((id) => ni.add(id));
+        else ids.forEach((id) => ni.delete(id));
+        return ni;
+      });
       return next;
     });
   }
 
-  async function saveSelectedGroups() {
-    const payload: Record<string, string[]> = {};
-    for (const [g, items] of Object.entries(suggested)) {
-      if (!selectedSuggestedGroups.has(g)) continue;
-      payload[g] = items.map((i) => i.id);
-    }
-    if (Object.keys(payload).length === 0) return;
-    const res = await chrome.runtime.sendMessage({
-      type: "SAVE_OPEN_GROUPS",
-      payload,
+  // Toggle individual item selection
+  function toggleSuggestedItem(id: string) {
+    setSelectedSuggestedItems((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
     });
-    if (!res?.ok) return;
+  }
 
-    setSuggested({});
+  /* ---------- New: Auto-Group Save picker + shared collectors ---------- */
+  const [autoPickerOpen, setAutoPickerOpen] = useState(false);
+
+  function collectSelectedIds(): {
+    byGroup: Record<string, string[]>;
+    flat: string[];
+  } {
+    const byGroup: Record<string, string[]> = {};
+    const flat: string[] = [];
+    for (const [g, items] of Object.entries(suggested)) {
+      const takeWhole = selectedSuggestedGroups.has(g);
+      const chosen = items.filter(
+        (i) => takeWhole || selectedSuggestedItems.has(i.id)
+      );
+      if (chosen.length) {
+        byGroup[g] = chosen.map((i) => i.id);
+        chosen.forEach((i) => flat.push(i.id));
+      }
+    }
+    return { byGroup, flat };
+  }
+
+  async function applyAutoGroupSave(
+    choice: "suggested" | "choose" | "new" | "none",
+    value?: string
+  ) {
+    const { byGroup, flat } = collectSelectedIds();
+    if (flat.length === 0) return;
+
+    if (choice === "suggested") {
+      // Save into their suggested groups (mapping)
+      const res = await chrome.runtime.sendMessage({
+        type: "SAVE_OPEN_GROUPS",
+        payload: byGroup,
+      });
+      if (!res?.ok) return;
+    } else {
+      // Save all into a single target group (existing/new/none)
+      const now = Date.now();
+      const targetGroup =
+        choice === "choose"
+          ? value || null
+          : choice === "new"
+          ? value?.trim() || null
+          : null;
+
+      const allItems: SuggestedItem[] = [];
+      for (const items of Object.values(suggested)) {
+        items.forEach((i) => {
+          if (flat.includes(i.id)) allItems.push(i);
+        });
+      }
+
+      const payload = allItems.map<SavedTab>((i) => ({
+        id: `${i.id}-${now}-${Math.random().toString(36).slice(2, 7)}`,
+        title: i.title || "(No title)",
+        url: i.url || "",
+        favIconUrl: i.favIconUrl,
+        savedAt: now,
+        group: targetGroup || undefined,
+      }));
+
+      const res = await chrome.runtime.sendMessage({
+        type: "SAVE_TABS_BULK",
+        payload,
+      });
+      if (!res?.ok) return;
+    }
+
+    // Preserve preview; clear selections only
     setSelectedSuggestedGroups(new Set());
+    setSelectedSuggestedItems(new Set());
+
+    setAutoPickerOpen(false);
     setView("saved");
     await loadSaved();
   }
@@ -463,6 +585,7 @@ export default function Sidebar() {
   function clearSuggestions() {
     setSuggested({});
     setSelectedSuggestedGroups(new Set());
+    setSelectedSuggestedItems(new Set());
   }
 
   /* ------------------ UI ------------------ */
@@ -546,7 +669,7 @@ export default function Sidebar() {
           </button>
         </div>
 
-        {/* Row 3: toolbar — compact like your ref */}
+        {/* Row 3: toolbar */}
         <div className="flex flex-wrap items-center gap-2">
           <button
             className="h-8 px-3 rounded-md border text-xs flex items-center justify-center gap-2 disabled:opacity-50 hover:bg-accent"
@@ -591,14 +714,19 @@ export default function Sidebar() {
                 <span>Auto-Group</span>
               </button>
 
-              {hasSuggestions && (
+              {hasSuggestions ? (
                 <>
+                  {/* One Save button in Auto-Group preview */}
                   <button
                     className="h-8 px-3 rounded-md bg-black text-white text-xs hover:opacity-90 disabled:opacity-50"
-                    onClick={saveSelectedGroups}
-                    disabled={selectedSuggestedGroups.size === 0}
+                    onClick={() => setAutoPickerOpen(true)}
+                    disabled={
+                      selectedSuggestedGroups.size === 0 &&
+                      selectedSuggestedItems.size === 0
+                    }
+                    title="Save the checked items"
                   >
-                    Save Selected
+                    Save
                   </button>
                   <button
                     className="h-8 px-3 rounded-md border text-xs hover:bg-accent"
@@ -607,24 +735,27 @@ export default function Sidebar() {
                     Clear
                   </button>
                 </>
+              ) : (
+                <>
+                  {/* Normal 'All' view (no preview) */}
+                  <button
+                    className="h-8 px-3 rounded-md border text-xs bg-primary text-primary-foreground disabled:opacity-50"
+                    disabled={selectedIds.size === 0}
+                    onClick={() => setShowPicker({ mode: "bulk" })}
+                    title="Save the checked items"
+                  >
+                    Save ({selectedIds.size})
+                  </button>
+
+                  <button
+                    className="h-8 px-3 rounded-md border text-xs hover:bg-accent"
+                    onClick={toggleAll}
+                    title="Toggle all"
+                  >
+                    {allChecked ? "Unselect all" : "Select all"}
+                  </button>
+                </>
               )}
-
-              <button
-                className="h-8 px-3 rounded-md border text-xs bg-primary text-primary-foreground disabled:opacity-50"
-                disabled={selectedIds.size === 0}
-                onClick={() => setShowPicker({ mode: "bulk" })}
-                title="Save the checked items"
-              >
-                Save ({selectedIds.size})
-              </button>
-
-              <button
-                className="h-8 px-3 rounded-md border text-xs hover:bg-accent"
-                onClick={toggleAll}
-                title="Toggle all"
-              >
-                {allChecked ? "Unselect all" : "Select all"}
-              </button>
             </>
           )}
 
@@ -682,10 +813,22 @@ export default function Sidebar() {
                       key={i.id}
                       className="p-2 rounded-lg border bg-card shadow-sm flex items-center gap-3"
                     >
+                      {/* item checkbox */}
+                      <input
+                        type="checkbox"
+                        className="h-4 w-4"
+                        checked={
+                          selectedSuggestedGroups.has(group) ||
+                          selectedSuggestedItems.has(i.id)
+                        }
+                        onChange={() => toggleSuggestedItem(i.id)}
+                      />
+
                       <img
                         src={faviconFor(inExtension, i.url, i.favIconUrl)}
                         className="w-5 h-5 rounded-sm"
                         onError={(e) => onIconError(e, inExtension)}
+                        alt=""
                       />
                       <div className="min-w-0">
                         <div className="text-sm font-medium truncate">
@@ -706,22 +849,7 @@ export default function Sidebar() {
                         >
                           Open
                         </button>
-                        <button
-                          className="text-xs px-2 py-1 rounded border"
-                          onClick={() =>
-                            setShowPicker({
-                              mode: "save",
-                              tab: {
-                                id: -1,
-                                title: i.title || "(No title)",
-                                url: i.url || "",
-                                favIconUrl: i.favIconUrl,
-                              } as TabInfo,
-                            })
-                          }
-                        >
-                          Save
-                        </button>
+                        {/* per-item Save removed in preview */}
                       </div>
                     </li>
                   ))}
@@ -756,6 +884,7 @@ export default function Sidebar() {
                     src={faviconFor(inExtension, t.url, t.favIconUrl)}
                     className="w-5 h-5 rounded-sm"
                     onError={(e) => onIconError(e, inExtension)}
+                    alt=""
                   />
                   <div className="min-w-0">
                     <div className="text-sm font-medium truncate">
@@ -932,6 +1061,7 @@ export default function Sidebar() {
                             src={faviconFor(inExtension, s.url, s.favIconUrl)}
                             className="w-5 h-5 rounded-sm"
                             onError={(e) => onIconError(e, inExtension)}
+                            alt=""
                           />
                           <div className="min-w-0">
                             <div className="text-sm font-medium truncate">
@@ -974,7 +1104,7 @@ export default function Sidebar() {
         )}
       </main>
 
-      {/* Group Picker */}
+      {/* Group Picker for normal Save flows */}
       {showPicker && (
         <GroupPicker
           existing={groups}
@@ -1036,6 +1166,14 @@ export default function Sidebar() {
         />
       )}
 
+      {/* New: Auto-Group Save Picker */}
+      <AutoGroupSavePicker
+        existing={groups}
+        open={autoPickerOpen}
+        onCancel={() => setAutoPickerOpen(false)}
+        onApply={applyAutoGroupSave}
+      />
+
       {/* Delete group confirmation */}
       {confirmDelete && (
         <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50">
@@ -1087,7 +1225,7 @@ export default function Sidebar() {
 }
 
 /* =======================================================
-   GroupPicker
+   GroupPicker (normal Save/Move)
 ======================================================= */
 function GroupPicker({
   existing,
@@ -1190,6 +1328,128 @@ function GroupPicker({
               )
             }
             disabled={mode === "new" && value.trim().length === 0}
+          >
+            Apply
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* =======================================================
+   AutoGroupSavePicker (preview Save options)
+======================================================= */
+function AutoGroupSavePicker({
+  existing,
+  open,
+  onCancel,
+  onApply,
+}: {
+  existing: string[];
+  open: boolean;
+  onCancel: () => void;
+  onApply: (
+    choice: "suggested" | "choose" | "new" | "none",
+    value?: string
+  ) => void;
+}) {
+  const [mode, setMode] = useState<"suggested" | "choose" | "new" | "none">(
+    "suggested"
+  );
+  const [chosen, setChosen] = useState(existing[0] ?? "");
+  const [newName, setNewName] = useState("");
+
+  if (!open) return null;
+
+  return (
+    <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50">
+      <div className="bg-background text-foreground rounded-xl shadow-xl border p-5 w-[380px] max-w-[90vw]">
+        <div className="font-semibold mb-3 text-lg">Save selected tabs</div>
+
+        <div className="space-y-3 text-sm">
+          <label className="flex items-center gap-2">
+            <input
+              type="radio"
+              checked={mode === "suggested"}
+              onChange={() => setMode("suggested")}
+            />
+            <span>Use suggested group for each tab</span>
+          </label>
+
+          <label className="flex items-center gap-2">
+            <input
+              type="radio"
+              checked={mode === "choose"}
+              onChange={() => setMode("choose")}
+            />
+            <span>Use existing group</span>
+          </label>
+          <div className="relative">
+            <select
+              disabled={mode !== "choose"}
+              className="w-full border rounded px-3 py-2 disabled:opacity-60 bg-background text-foreground shadow-sm appearance-none"
+              value={chosen}
+              onChange={(e) => setChosen(e.target.value)}
+            >
+              {existing.length === 0 ? (
+                <option value="">(No groups yet)</option>
+              ) : null}
+              {existing.map((g) => (
+                <option key={g} value={g}>
+                  {g}
+                </option>
+              ))}
+            </select>
+            <span className="absolute right-3 top-1/2 -translate-y-1/2">▼</span>
+          </div>
+
+          <label className="flex items-center gap-2">
+            <input
+              type="radio"
+              checked={mode === "new"}
+              onChange={() => setMode("new")}
+            />
+            <span>Create new group</span>
+          </label>
+          <input
+            disabled={mode !== "new"}
+            className="w-full border rounded px-3 py-2 disabled:opacity-60 bg-background text-foreground shadow-sm"
+            placeholder="e.g., Research"
+            value={newName}
+            onChange={(e) => setNewName(e.target.value)}
+          />
+
+          <label className="flex items-center gap-2">
+            <input
+              type="radio"
+              checked={mode === "none"}
+              onChange={() => setMode("none")}
+            />
+            <span>Save without group</span>
+          </label>
+        </div>
+
+        <div className="mt-6 flex gap-2 justify-end">
+          <button
+            className="px-3 py-1.5 border rounded hover:bg-muted transition text-sm"
+            onClick={onCancel}
+          >
+            Cancel
+          </button>
+          <button
+            className="px-3 py-1.5 border rounded bg-primary text-primary-foreground text-sm hover:opacity-90 transition"
+            disabled={mode === "new" && newName.trim().length === 0}
+            onClick={() =>
+              onApply(
+                mode,
+                mode === "choose"
+                  ? chosen
+                  : mode === "new"
+                  ? newName.trim()
+                  : undefined
+              )
+            }
           >
             Apply
           </button>

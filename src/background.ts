@@ -190,9 +190,13 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       try {
         const all = await chrome.tabs.query({ currentWindow: true });
         const skinny = all
-          .filter((t) => t.id != null)
-          .map((t) => ({ id: String(t.id), title: t.title || "(No title)" }));
-
+          .filter((t) => t.id != null && !isRestricted(t.url))
+          .map((t) => ({
+            id: String(t.id),
+            title: t.title || "(No title)",
+            url: t.url || "",
+            favIconUrl: t.favIconUrl || "",
+          }));
         const groupsJson = await groupTabsByIdStrict(skinny);
         // Return skinny so UI can decorate with URLs/icons it already has
         sendResponse({ ok: true, groups: groupsJson, tabs: skinny });
