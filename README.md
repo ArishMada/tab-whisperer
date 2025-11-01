@@ -1,4 +1,3 @@
-````markdown
 # 🧠✨ Tab Whisperer — Chrome AI Extension
 
 > **“Let your tabs speak.”**  
@@ -9,13 +8,11 @@
 
 ## 🎥 Demo Video
 🎬 *[Watch the Demo — Coming Soon!](#)*  
-_Add your video link here once uploaded (e.g., YouTube or Google Drive)_
 
 ---
 
 ## 🧩 Try It Yourself
 📦 *[Download Tab Whisperer (ZIP)](#)*  
-_Add your Chrome Web Store or ZIP link here for installation_
 
 ---
 
@@ -28,7 +25,7 @@ _Add your Chrome Web Store or ZIP link here for installation_
 - 🧹 Help you focus by **decluttering** unused ones  
 - 📚 Preserve your research context and revisit anytime  
 
-All powered **locally** by **Gemini Nano** — *no data ever leaves your browser.*
+All powered by **Gemini**
 
 ---
 
@@ -36,8 +33,7 @@ All powered **locally** by **Gemini Nano** — *no data ever leaves your browser
 
 🪄 Below is a placeholder for your architecture diagram / flow chart:
 
-
-> ```text
+````markdown
 > +------------------+         +------------------+         +------------------+
 > |  Open Chrome     |  --->   |  Background.ts   |  --->   |  Gemini Summarizer |
 > |  Tabs (titles &  |         |  collects tab    |         |  (summaries +     |
@@ -50,12 +46,7 @@ All powered **locally** by **Gemini Nano** — *no data ever leaves your browser
 >      |  (Saved Tabs,    |                               |  Interactive tab |
 >      |  Groups, Stars)  |                               |  management)     |
 >      +------------------+                               +------------------+
-> ```
-> _You can replace this block later with your own Figma or Mermaid diagram._
 
-
-
----
 ## 🏗️ Folder Structure
 
 tab-whisperer/
