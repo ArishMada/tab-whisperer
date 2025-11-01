@@ -82,6 +82,103 @@ function ChevronIcon({
   );
 }
 
+/* Extra minimal action icons */
+function OpenIcon({ className = "w-4 h-4" }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      className={className}
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      aria-hidden
+    >
+      <path d="M14 3h7v7M21 3l-9 9" />
+      <path d="M5 5h6a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2Z" />
+    </svg>
+  );
+}
+function MoveIcon({ className = "w-4 h-4" }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      className={className}
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      aria-hidden
+    >
+      <path d="M7 7h10v10H7z" />
+      <path d="M3 12h4M17 12h4M12 3v4M12 17v4" />
+    </svg>
+  );
+}
+function TrashIcon({ className = "w-4 h-4" }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      className={className}
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      aria-hidden
+    >
+      <path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+      <path d="M6 6l1 14a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-14" />
+      <path d="M10 11v6M14 11v6" />
+    </svg>
+  );
+}
+function SparklesIcon({ className = "w-4 h-4" }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      className={className}
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      aria-hidden
+    >
+      <path d="M5 12l2-2-2-2 2-2-2-2" />
+      <path d="M13 21l2-3 3-2-3-2-2-3-2 3-3 2 3 2 2 3z" />
+    </svg>
+  );
+}
+
+/* Tiny button + responsive action bar */
+function TinyButton({
+  title,
+  onClick,
+  disabled = false,
+  children,
+}: React.PropsWithChildren<{
+  title: string;
+  onClick: () => void;
+  disabled?: boolean;
+}>) {
+  return (
+    <button
+      title={title}
+      aria-label={title}
+      onClick={onClick}
+      disabled={disabled}
+      className="px-2.5 h-7 rounded-md border bg-background hover:bg-accent disabled:opacity-50 inline-flex items-center gap-1.5 text-[12px]"
+    >
+      {children}
+    </button>
+  );
+}
+function ActionBar({ children }: React.PropsWithChildren) {
+  return (
+    <div className="w-full mt-1 sm:mt-0 grid grid-cols-2 gap-2 sm:(grid-cols-none grid-flow-col auto-cols-max)">
+      {children}
+    </div>
+  );
+}
+function Label({ children }: React.PropsWithChildren) {
+  return <span className="hidden sm:inline">{children}</span>;
+}
+
 /* ------------------ Types ------------------ */
 type TabInfo = { id: number; title: string; url: string; favIconUrl?: string };
 type SavedTab = {
@@ -92,7 +189,6 @@ type SavedTab = {
   savedAt: number;
   group?: string;
 };
-
 type SuggestedItem = {
   id: string; // chrome tab id as string
   title: string;
@@ -101,7 +197,6 @@ type SuggestedItem = {
 };
 
 /* ------------------ Helpers ------------------ */
-// Prefer tab favicon, else site /favicon.ico, else extension logo.
 function faviconFor(
   inExtension: boolean,
   url?: string,
@@ -111,24 +206,20 @@ function faviconFor(
   try {
     if (url) return new URL("/favicon.ico", new URL(url).origin).href;
   } catch {
-    /* ignore */
+    return inExtension ? chrome.runtime.getURL("icons/Logo.png") : undefined;
   }
   return inExtension ? chrome.runtime.getURL("icons/Logo.png") : undefined;
 }
-
-// onError → swap once to extension logo (don’t hide).
 function onIconError(
   e: React.SyntheticEvent<HTMLImageElement>,
   inExt: boolean
 ) {
   const img = e.currentTarget as HTMLImageElement;
   if (!inExt) return;
-  if (img.dataset.fallback === "1") return; // avoid loop
+  if (img.dataset.fallback === "1") return;
   img.dataset.fallback = "1";
   img.src = chrome.runtime.getURL("icons/Logo.png");
 }
-
-/* Light helper to match saved state by URL (used for the bookmark toggle) */
 function savedMatchFor(saved: SavedTab[], url: string | undefined) {
   if (!url) return undefined;
   return saved.find((s) => s.url === url);
@@ -145,7 +236,7 @@ export default function Sidebar() {
 
   const [recapLoading, setRecapLoading] = useState(false);
   const [autoGroupLoading, setAutoGroupLoading] = useState(false);
-  const [groupSummarizing, setGroupSummarizing] = useState<string | null>(null); // saved-group summarize spinner
+  const [groupSummarizing, setGroupSummarizing] = useState<string | null>(null);
 
   const [showPicker, setShowPicker] = useState<null | {
     mode: "save" | "move" | "bulk";
@@ -153,13 +244,11 @@ export default function Sidebar() {
   }>(null);
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
 
-  // Per-tab summarizing spinners
-  const [tabSummarizingId, setTabSummarizingId] = useState<number | null>(null); // ALL view (open tab)
+  const [tabSummarizingId, setTabSummarizingId] = useState<number | null>(null);
   const [savedTabSummarizingId, setSavedTabSummarizingId] = useState<
     string | null
-  >(null); // SAVED view (by url)
+  >(null);
 
-  // NEW: preview-only summarize spinners
   const [previewGroupSummarizing, setPreviewGroupSummarizing] = useState<
     string | null
   >(null);
@@ -225,7 +314,7 @@ export default function Sidebar() {
   >(new Set());
   const [selectedSuggestedItems, setSelectedSuggestedItems] = useState<
     Set<string>
-  >(new Set()); // item-level selection
+  >(new Set());
 
   const hasSuggestions = Object.keys(suggested).length > 0;
 
@@ -347,7 +436,6 @@ export default function Sidebar() {
           )
         );
 
-        // keep preview in sync so "New Tab" becomes real title/url
         if (hasSuggestions) {
           setSuggested((prev) => {
             const next: Record<string, SuggestedItem[]> = {};
@@ -474,7 +562,6 @@ export default function Sidebar() {
             "\n\n" +
             jsonText
         );
-
         setSummaryOpen(true);
         return;
       }
@@ -512,7 +599,6 @@ export default function Sidebar() {
       const groups: Record<string, { id: string; title: string }[]> =
         toRenderableGroups(jsonText, res.tabs ?? []);
 
-      // enrich with url + favIcon (background returns them)
       const byId = new Map<string, { url?: string; favIconUrl?: string }>();
       const rawTabs = (res.tabs ?? []) as Array<{
         id?: number | string;
@@ -538,7 +624,6 @@ export default function Sidebar() {
         });
       }
 
-      // PREVIEW ONLY; nothing is persisted yet.
       setSuggested(enriched);
       setSelectedSuggestedGroups(new Set());
       setSelectedSuggestedItems(new Set());
@@ -548,7 +633,6 @@ export default function Sidebar() {
     }
   }
 
-  // Toggle entire group and (de)select all its items for clarity
   function toggleSuggestedPick(name: string) {
     setSelectedSuggestedGroups((prev) => {
       const next = new Set(prev);
@@ -566,8 +650,6 @@ export default function Sidebar() {
       return next;
     });
   }
-
-  // Toggle individual item selection
   function toggleSuggestedItem(id: string) {
     setSelectedSuggestedItems((prev) => {
       const next = new Set(prev);
@@ -577,7 +659,7 @@ export default function Sidebar() {
     });
   }
 
-  /* ---------- New: Auto-Group Save picker + shared collectors ---------- */
+  /* ---------- Auto-Group Save picker + collectors ---------- */
   const [autoPickerOpen, setAutoPickerOpen] = useState(false);
 
   function collectSelectedIds(): {
@@ -607,14 +689,12 @@ export default function Sidebar() {
     if (flat.length === 0) return;
 
     if (choice === "suggested") {
-      // Save into their suggested groups (mapping)
       const res = await chrome.runtime.sendMessage({
         type: "SAVE_OPEN_GROUPS",
         payload: byGroup,
       });
       if (!res?.ok) return;
     } else {
-      // Save all into a single target group (existing/new/none)
       const now = Date.now();
       const targetGroup =
         choice === "choose"
@@ -646,7 +726,6 @@ export default function Sidebar() {
       if (!res?.ok) return;
     }
 
-    // Preserve preview; clear selections only
     setSelectedSuggestedGroups(new Set());
     setSelectedSuggestedItems(new Set());
 
@@ -681,8 +760,6 @@ export default function Sidebar() {
       setTabSummarizingId(null);
     }
   }
-
-  // NEW: preview — summarize a suggested group without saving
   async function summarizePreviewGroup(groupName: string) {
     try {
       setPreviewGroupSummarizing(groupName);
@@ -702,8 +779,6 @@ export default function Sidebar() {
       setPreviewGroupSummarizing(null);
     }
   }
-
-  // NEW: preview — summarize a suggested item by its open tabId
   async function summarizePreviewTab(idStr: string) {
     try {
       setPreviewTabSummarizingId(idStr);
@@ -721,8 +796,6 @@ export default function Sidebar() {
       setPreviewTabSummarizingId(null);
     }
   }
-
-  // NEW: saved — summarize one saved tab (works even if not open)
   async function summarizeSavedTab(tab: SavedTab) {
     try {
       setSavedTabSummarizingId(tab.id);
@@ -740,7 +813,7 @@ export default function Sidebar() {
     }
   }
 
-  /* --- UI-only additions for the bookmark toggle + action trays --- */
+  /* --- UI expansion state --- */
   const [openExpanded, setOpenExpanded] = useState<Set<number>>(new Set());
   const [savedExpanded, setSavedExpanded] = useState<Set<string>>(new Set());
   const toggleOpenExpanded = (id: number) =>
@@ -912,7 +985,6 @@ export default function Sidebar() {
 
               {hasSuggestions ? (
                 <>
-                  {/* Save buttons in Auto-Group preview */}
                   <button
                     className="h-8 px-3 rounded-md bg-black text-white text-xs hover:opacity-90 disabled:opacity-50"
                     onClick={() => setAutoPickerOpen(true)}
@@ -933,7 +1005,6 @@ export default function Sidebar() {
                 </>
               ) : (
                 <>
-                  {/* Normal 'All' view (no preview) */}
                   <button
                     className="h-8 px-3 rounded-md border text-xs bg-primary text-primary-foreground disabled:opacity-50"
                     disabled={selectedIds.size === 0}
@@ -1003,7 +1074,6 @@ export default function Sidebar() {
                     <span className="text-sm opacity-60">({items.length})</span>
                   </label>
 
-                  {/* NEW: Summarize this suggested group (no save) */}
                   <button
                     className="text-xs px-2 py-1 rounded border ml-2 flex items-center gap-2 disabled:opacity-50"
                     disabled={previewGroupSummarizing === group}
@@ -1016,16 +1086,16 @@ export default function Sidebar() {
                     <span>Summarize</span>
                   </button>
                 </div>
+
                 <ul className="px-3 pb-3 space-y-2">
                   {items.map((i) => (
                     <li
                       key={i.id}
-                      className="p-2 rounded-lg border bg-card shadow-sm flex items-start flex-wrap gap-3"
+                      className="p-2 rounded-lg border bg-card shadow-sm flex items-start sm:items-center flex-wrap gap-3.5"
                     >
-                      {/* item checkbox */}
                       <input
                         type="checkbox"
-                        className="h-4 w-4 mt-1"
+                        className="h-4 w-4 mt-1 sm:mt-0"
                         checked={
                           selectedSuggestedGroups.has(group) ||
                           selectedSuggestedItems.has(i.id)
@@ -1049,28 +1119,32 @@ export default function Sidebar() {
                           </div>
                         ) : null}
                       </div>
-                      <div className="ml-auto flex gap-2">
-                        <button
-                          className="text-xs px-2 py-1 rounded border"
-                          onClick={() =>
-                            chrome.tabs.update(Number(i.id), { active: true })
-                          }
-                        >
-                          Open
-                        </button>
 
-                        {/* NEW: per-tab summarize in preview (uses open tabId) */}
-                        <button
-                          className="text-xs px-2 py-1 rounded border flex items-center gap-1 disabled:opacity-50"
-                          title="Summarize this tab without saving"
-                          disabled={previewTabSummarizingId === i.id}
-                          onClick={() => summarizePreviewTab(i.id)}
-                        >
-                          {previewTabSummarizingId === i.id ? (
-                            <Spinner className="h-3.5 w-3.5" />
-                          ) : null}
-                          <span>Summarize</span>
-                        </button>
+                      <div className="ml-auto">
+                        <ActionBar>
+                          <TinyButton
+                            title="Open"
+                            onClick={() =>
+                              chrome.tabs.update(Number(i.id), { active: true })
+                            }
+                          >
+                            <OpenIcon />
+                            <Label>Open</Label>
+                          </TinyButton>
+
+                          <TinyButton
+                            title="Summarize"
+                            onClick={() => summarizePreviewTab(i.id)}
+                            disabled={previewTabSummarizingId === i.id}
+                          >
+                            {previewTabSummarizingId === i.id ? (
+                              <Spinner className="h-3.5 w-3.5" />
+                            ) : (
+                              <SparklesIcon />
+                            )}
+                            <Label>Summarize</Label>
+                          </TinyButton>
+                        </ActionBar>
                       </div>
                     </li>
                   ))}
@@ -1094,11 +1168,11 @@ export default function Sidebar() {
                 return (
                   <li
                     key={t.id}
-                    className="p-2 rounded-lg border bg-card shadow-sm flex items-start flex-wrap gap-3"
+                    className="p-2 rounded-lg border bg-card shadow-sm flex items-start sm:items-center flex-wrap gap-3.5"
                   >
                     <input
                       type="checkbox"
-                      className="h-4 w-4 mt-1"
+                      className="h-4 w-4 mt-1 sm:mt-0"
                       checked={selectedIds.has(t.id)}
                       onChange={() => toggleOne(t.id)}
                     />
@@ -1119,7 +1193,6 @@ export default function Sidebar() {
                     </div>
 
                     <div className="ml-auto flex items-center gap-1">
-                      {/* Bookmark toggle */}
                       <button
                         className="h-7 w-7 rounded-md border bg-background hover:bg-accent flex items-center justify-center"
                         title={isSaved ? "Remove from Saved" : "Save"}
@@ -1131,7 +1204,6 @@ export default function Sidebar() {
                         <BookmarkIcon filled={isSaved} />
                       </button>
 
-                      {/* Chevron to reveal secondary actions */}
                       <button
                         className="h-7 w-7 rounded-md border bg-background hover:bg-accent flex items-center justify-center"
                         title="More"
@@ -1141,40 +1213,42 @@ export default function Sidebar() {
                       </button>
                     </div>
 
-                    {/* Collapsible action tray */}
                     {openExpanded.has(t.id) && (
                       <div className="basis-full px-2 pt-2">
-                        <div className="flex flex-wrap gap-2">
-                          <button
-                            className="text-xs px-2 py-1 rounded border"
+                        <ActionBar>
+                          <TinyButton
+                            title="Open"
                             onClick={() =>
                               chrome.tabs.update(Number(t.id), { active: true })
                             }
                           >
-                            Open
-                          </button>
-                          <button
-                            className="text-xs px-2 py-1 rounded border"
+                            <OpenIcon />
+                            <Label>Open</Label>
+                          </TinyButton>
+
+                          <TinyButton
+                            title="Move to group…"
                             onClick={() =>
                               setShowPicker({ mode: "save", tab: t })
                             }
                           >
-                            Move to group…
-                          </button>
+                            <MoveIcon />
+                            <Label>Move</Label>
+                          </TinyButton>
 
-                          {/* per-tab Summarize (open tabId) */}
-                          <button
-                            className="text-xs px-2 py-1 rounded border flex items-center gap-1 disabled:opacity-50"
-                            title="Summarize this tab"
-                            disabled={tabSummarizingId === t.id}
+                          <TinyButton
+                            title="Summarize"
                             onClick={() => summarizeOneOpenTab(t.id, "bullets")}
+                            disabled={tabSummarizingId === t.id}
                           >
                             {tabSummarizingId === t.id ? (
                               <Spinner className="h-3.5 w-3.5" />
-                            ) : null}
-                            <span>Summarize</span>
-                          </button>
-                        </div>
+                            ) : (
+                              <SparklesIcon />
+                            )}
+                            <Label>Summarize</Label>
+                          </TinyButton>
+                        </ActionBar>
                       </div>
                     )}
                   </li>
@@ -1243,7 +1317,6 @@ export default function Sidebar() {
                       </button>
                     )}
 
-                    {/* summarize group (saved) */}
                     <button
                       className="text-xs px-2 py-1 rounded border ml-2 flex items-center gap-2 disabled:opacity-50"
                       disabled={groupSummarizing === groupName}
@@ -1322,7 +1395,7 @@ export default function Sidebar() {
                       {items.map((s) => (
                         <li
                           key={s.id}
-                          className="p-2 rounded-lg border bg-card shadow-sm flex items-start flex-wrap gap-3"
+                          className="p-2 rounded-lg border bg-card shadow-sm flex items-start sm:items-center flex-wrap gap-3.5"
                         >
                           <img
                             src={faviconFor(inExtension, s.url, s.favIconUrl)}
@@ -1340,7 +1413,6 @@ export default function Sidebar() {
                           </div>
 
                           <div className="ml-auto flex items-center gap-1">
-                            {/* Filled bookmark — click to remove */}
                             <button
                               className="h-7 w-7 rounded-md border bg-background hover:bg-accent flex items-center justify-center"
                               title="Remove from Saved"
@@ -1349,7 +1421,6 @@ export default function Sidebar() {
                               <BookmarkIcon filled />
                             </button>
 
-                            {/* Chevron to reveal actions */}
                             <button
                               className="h-7 w-7 rounded-md border bg-background hover:bg-accent flex items-center justify-center"
                               title="More"
@@ -1359,46 +1430,50 @@ export default function Sidebar() {
                             </button>
                           </div>
 
-                          {/* Collapsible action tray */}
                           {savedExpanded.has(s.id) && (
                             <div className="basis-full px-2 pt-2">
-                              <div className="flex flex-wrap gap-2">
-                                <button
-                                  className="text-xs px-2 py-1 rounded border"
+                              <ActionBar>
+                                <TinyButton
+                                  title="Open"
                                   onClick={() =>
                                     chrome.tabs.create({ url: s.url })
                                   }
                                 >
-                                  Open
-                                </button>
-                                <button
-                                  className="text-xs px-2 py-1 rounded border"
+                                  <OpenIcon />
+                                  <Label>Open</Label>
+                                </TinyButton>
+
+                                <TinyButton
+                                  title="Move to group…"
                                   onClick={() =>
                                     setShowPicker({ mode: "move", tab: s })
                                   }
                                 >
-                                  Move to group…
-                                </button>
-                                <button
-                                  className="text-xs px-2 py-1 rounded border"
+                                  <MoveIcon />
+                                  <Label>Move</Label>
+                                </TinyButton>
+
+                                <TinyButton
+                                  title="Remove"
                                   onClick={() => removeSaved(s.id)}
                                 >
-                                  Remove
-                                </button>
+                                  <TrashIcon />
+                                  <Label>Remove</Label>
+                                </TinyButton>
 
-                                {/* NEW: per-saved-tab summarize (by URL) */}
-                                <button
-                                  className="text-xs px-2 py-1 rounded border flex items-center gap-1 disabled:opacity-50"
-                                  title="Summarize this saved tab"
-                                  disabled={savedTabSummarizingId === s.id}
+                                <TinyButton
+                                  title="Summarize"
                                   onClick={() => summarizeSavedTab(s)}
+                                  disabled={savedTabSummarizingId === s.id}
                                 >
                                   {savedTabSummarizingId === s.id ? (
                                     <Spinner className="h-3.5 w-3.5" />
-                                  ) : null}
-                                  <span>Summarize</span>
-                                </button>
-                              </div>
+                                  ) : (
+                                    <SparklesIcon />
+                                  )}
+                                  <Label>Summarize</Label>
+                                </TinyButton>
+                              </ActionBar>
                             </div>
                           )}
                         </li>
@@ -1412,7 +1487,7 @@ export default function Sidebar() {
         )}
       </main>
 
-      {/* Group Picker for normal Save flows */}
+      {/* Group Picker for normal Save/Move */}
       {showPicker && (
         <GroupPicker
           existing={groups}
@@ -1474,7 +1549,7 @@ export default function Sidebar() {
         />
       )}
 
-      {/* New: Auto-Group Save Picker */}
+      {/* Auto-Group Save Picker */}
       <AutoGroupSavePicker
         existing={groups}
         open={autoPickerOpen}
