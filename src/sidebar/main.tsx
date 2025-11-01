@@ -1,5 +1,10 @@
-// import React from 'react'
-import { createRoot } from 'react-dom/client'
-import { Sidebar } from './Sidebar'
+import React from "react";
+import ReactDOM from "react-dom/client";
+import "../index.css";
+import Sidebar from "./Sidebar";
 
-createRoot(document.getElementById('root')!).render(<Sidebar />)
+ReactDOM.createRoot(document.getElementById("root")!).render(
+  <React.StrictMode>
+    <Sidebar />
+  </React.StrictMode>
+);
